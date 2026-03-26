@@ -9,6 +9,9 @@ pub(super) struct InputBuffer {
     pub text: String,
     /// Cursor position (in characters, not bytes)
     pub cursor_pos: usize,
+    /// Selection anchor position (in characters). When set, the selection range
+    /// is `min(anchor, cursor_pos)..max(anchor, cursor_pos)`.
+    pub selection_anchor: Option<usize>,
 }
 
 impl InputBuffer {
@@ -17,20 +20,23 @@ impl InputBuffer {
         Self {
             text: String::new(),
             cursor_pos: 0,
+            selection_anchor: None,
         }
     }
 
-    /// Clear the buffer (text, cursor).
+    /// Clear the buffer (text, cursor, selection).
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor_pos = 0;
+        self.selection_anchor = None;
     }
 
-    /// Insert text at the current cursor position.
+    /// Insert text at the current cursor position (clears selection).
     pub fn insert(&mut self, text: &str) {
         if text.is_empty() {
             return;
         }
+        self.selection_anchor = None;
         let byte_pos = self
             .text
             .char_indices()
@@ -40,6 +46,21 @@ impl InputBuffer {
         self.text.insert_str(byte_pos, text);
         let char_count = text.chars().count();
         self.cursor_pos += char_count;
+    }
+
+    /// Get the selection range as `(start, end)` in character positions.
+    /// Returns `None` if no selection is active or anchor equals cursor.
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.selection_anchor.and_then(|anchor| {
+            let start = anchor.min(self.cursor_pos);
+            let end = anchor.max(self.cursor_pos);
+            if start == end { None } else { Some((start, end)) }
+        })
+    }
+
+    /// Clear the selection anchor.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
     }
 
     /// Remove the character at the given character position.

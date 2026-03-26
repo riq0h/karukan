@@ -58,12 +58,33 @@ Shift+英字でアルファベットを入力した後、確定してEmpty状態
 
 - 対象: `karukan-im/src/core/engine/input.rs`
 
-#### 3. カーソル位置による部分変換
-カーソルを移動してからSpaceを押すと、カーソルより前のテキストのみを変換し、残りはComposing状態に戻ります。
+#### 3. Shift+矢印キーによる選択ベース部分変換
+Composing状態でShift+矢印キーを使って選択範囲を作り、Spaceを押すと選択部分のみを変換します。選択前のテキストはそのまま確定され、選択後のテキストはComposing状態に残ります。選択なしでSpaceを押すとテキスト全体を変換します（従来のカーソル位置分割は廃止）。
 
-- 対象: `karukan-im/src/core/engine/conversion.rs`, `mod.rs`
+- Shift+Left/Right: 1文字ずつ選択範囲を拡大/縮小
+- Shift+Home/End: 先頭/末尾まで一括選択
+- 通常の矢印キー: カーソル移動（選択解除）
+- 対象: `karukan-im/src/core/engine/input_buffer.rs`, `cursor.rs`, `display.rs`, `input.rs`, `conversion.rs`, `mod.rs`
 
-#### 4. 記号の全角変換
+#### 4. F6〜F10による直接変換
+Composing状態および変換中にファンクションキーで直接変換できます。MS-IME/ATOKと同様のキーバインドです。
+
+| キー | 変換内容 |
+|------|----------|
+| F6 | ひらがな |
+| F7 | 全角カタカナ |
+| F8 | 半角カタカナ |
+| F9 | 全角英数 |
+| F10 | 半角英数 |
+
+- 対象: `karukan-im/src/core/engine/conversion.rs`, `input.rs`, `karukan-engine/src/kana.rs`, `lib.rs`
+
+#### 5. 変換候補の冗長フィルタリング
+モデル推論結果のうち、出力文字数が読みの文字数を超える候補を除外します。また、Space変換時の学習キャッシュ候補は完全一致のみに限定し、前方一致（予測）候補を除外します。これにより「へんかん」→「変換ウインドウ」のような冗長な候補が表示されなくなります。
+
+- 対象: `karukan-im/src/core/engine/conversion.rs`
+
+#### 6. 記号の全角変換
 ひらがなモード時に `#`, `(`, `)`, `@`, `<`, `>` 等の記号が全角に変換されます。
 
 - 対象: `karukan-engine/src/romaji/rules.rs`

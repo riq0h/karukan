@@ -169,18 +169,24 @@ impl InputMethodEngine {
         self.flush_romaji_to_composed();
 
         let full_text = self.input_buf.text.clone();
-        let cursor = self.input_buf.cursor_pos;
-        let text_len = full_text.chars().count();
 
-        // Partial conversion: if cursor is not at the end, split at cursor
-        let (reading, remaining) = if cursor > 0 && cursor < text_len {
-            let before: String = full_text.chars().take(cursor).collect();
-            let after: String = full_text.chars().skip(cursor).collect();
-            (before, Some(after))
+        // Selection-based partial conversion: convert only the selected range
+        let (reading, remaining) = if let Some((sel_start, sel_end)) =
+            self.input_buf.selection_range()
+        {
+            let before: String = full_text.chars().take(sel_start).collect();
+            let selected: String = full_text
+                .chars()
+                .skip(sel_start)
+                .take(sel_end - sel_start)
+                .collect();
+            let after: String = full_text.chars().skip(sel_end).collect();
+            (selected, Some((before, after)))
         } else {
             (full_text, None)
         };
         self.remaining_after_conversion = remaining;
+        self.input_buf.clear_selection();
 
         // Save auto-suggest/live conversion result before clearing state.
         // This ensures the candidate that was displayed during input is preserved
@@ -365,11 +371,14 @@ impl InputMethodEngine {
         let hiragana = reading.to_string();
         let katakana = Self::hiragana_to_katakana(reading);
 
-        // Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
+        // Priority: Learning → Model → System Dictionary → User Dictionary → Fallback
         let mut builder = CandidateBuilder::new();
 
-        // 1. Learning cache candidates (highest priority)
-        for c in self.lookup_learning_candidates(reading) {
+        // 1. Learning cache candidates (highest priority, exact match only)
+        //    Prefix (predictive) matches are excluded during explicit conversion
+        //    to avoid suggesting overly long candidates like "変換ウインドウ"
+        //    for a reading of "へんかん". Prefix matches are still used in auto-suggest.
+        for c in self.lookup_learning_exact(reading) {
             // Force-insert learning candidates (always included even if duplicate text)
             builder.seen.insert(c.text.clone());
             builder.candidates.push(AnnotatedCandidate {
@@ -380,38 +389,74 @@ impl InputMethodEngine {
             });
         }
 
-        // 2. Dictionary candidates (user dict first, then system dict)
-        let dict_results = self.search_dictionaries(reading, usize::MAX);
-        // Insert user dictionary entries at the top (after learning)
-        for ac in &dict_results {
-            if ac.source == CandidateSource::UserDictionary {
-                builder.push_annotated_if_new(ac.clone());
-            }
-        }
-
-        // 3. Model inference results
+        // 2. Model inference results (filter out overly long candidates)
+        //    Kana-kanji conversion should produce output ≤ reading length in chars.
+        //    Longer output typically means the model appended extra words
+        //    (e.g. "へんかん" → "変換ウインドウ").
+        let reading_len = reading.chars().count();
         if candidates.is_empty() {
             if builder.is_empty() {
                 builder.push_if_new(hiragana.clone(), CandidateSource::Fallback, None);
             }
         } else {
             for text in candidates {
-                builder.push_if_new(text, CandidateSource::Model, None);
+                if text.chars().count() <= reading_len {
+                    builder.push_if_new(text, CandidateSource::Model, None);
+                }
             }
         }
 
-        // 4. System dictionary candidates (from search_dictionaries result)
-        for ac in dict_results {
+        // 3. Dictionary candidates
+        let dict_results = self.search_dictionaries(reading, usize::MAX);
+
+        // 3a. System dictionary
+        for ac in &dict_results {
             if ac.source == CandidateSource::Dictionary {
+                builder.push_annotated_if_new(ac.clone());
+            }
+        }
+
+        // 3b. User dictionary (kaomoji/emoji etc. — lowest priority among dictionaries)
+        for ac in dict_results {
+            if ac.source == CandidateSource::UserDictionary {
                 builder.push_annotated_if_new(ac);
             }
         }
 
-        // 5. Append hiragana/katakana fallback if not already present
+        // 4. Append hiragana/katakana fallback if not already present
         builder.push_if_new(hiragana, CandidateSource::Fallback, None);
         builder.push_if_new(katakana, CandidateSource::Fallback, None);
 
         builder.into_candidates()
+    }
+
+    /// Look up learning cache candidates for a reading (exact match only, max 3).
+    ///
+    /// Used during explicit conversion (Space key) to avoid overly long prefix-match
+    /// candidates. For auto-suggest display, use `lookup_learning_candidates` instead.
+    fn lookup_learning_exact(&self, reading: &str) -> Vec<Candidate> {
+        let Some(cache) = &self.learning else {
+            return vec![];
+        };
+        let mut candidates: Vec<Candidate> = Vec::new();
+        let mut seen = HashSet::new();
+        let label = CandidateSource::Learning.label().to_string();
+
+        for (surface, _score) in cache.lookup(reading) {
+            if candidates.len() >= MAX_LEARNING_CANDIDATES {
+                break;
+            }
+            if seen.insert(surface.clone()) {
+                candidates.push(Candidate {
+                    text: surface,
+                    reading: Some(reading.to_string()),
+                    annotation: Some(label.clone()),
+                    index: candidates.len(),
+                });
+            }
+        }
+
+        candidates
     }
 
     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
@@ -498,6 +543,11 @@ impl InputMethodEngine {
         match key.keysym {
             Keysym::RETURN => self.commit_conversion(),
             Keysym::ESCAPE => self.cancel_conversion(),
+            Keysym::F6 => self.direct_convert_hiragana(),
+            Keysym::F7 => self.direct_convert_katakana(),
+            Keysym::F8 => self.direct_convert_halfwidth_katakana(),
+            Keysym::F9 => self.direct_convert_fullwidth_ascii(),
+            Keysym::F10 => self.direct_convert_halfwidth_ascii(),
             Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.next_candidate(),
             Keysym::UP => self.prev_candidate(),
             Keysym::PAGE_DOWN => self.next_candidate_page(),
@@ -568,16 +618,28 @@ impl InputMethodEngine {
         // Check for remaining text from partial conversion
         let remaining = self.remaining_after_conversion.take();
 
-        if let Some(remaining) = remaining {
-            // Partial conversion: commit converted part, return remaining to composing
-            self.input_buf.text = remaining;
+        if let Some((before, after)) = remaining {
+            // Partial conversion: commit `before + converted_text`, return `after` to composing
+            let commit_text = format!("{}{}", before, text);
+            self.input_buf.text = after;
             self.input_buf.cursor_pos = self.input_buf.text.chars().count();
             self.converters.romaji.reset();
             self.live.text.clear();
             let preedit = self.set_composing_state();
 
+            if self.input_buf.text.is_empty() {
+                // Nothing remaining — fully commit and return to empty
+                self.state = InputState::Empty;
+                self.input_buf.clear();
+                return EngineResult::consumed()
+                    .with_action(EngineAction::UpdatePreedit(Preedit::new()))
+                    .with_action(EngineAction::HideCandidates)
+                    .with_action(EngineAction::HideAuxText)
+                    .with_action(EngineAction::Commit(commit_text));
+            }
+
             let mut result = EngineResult::consumed()
-                .with_action(EngineAction::Commit(text))
+                .with_action(EngineAction::Commit(commit_text))
                 .with_action(EngineAction::UpdatePreedit(preedit))
                 .with_action(EngineAction::HideCandidates);
             if self.config.auto_suggest {
@@ -609,7 +671,13 @@ impl InputMethodEngine {
             self.record_learning(reading, &text);
         }
 
-        self.remaining_after_conversion = None;
+        // Build commit text including any before-selection prefix
+        let commit_text = if let Some((before, _after)) = self.remaining_after_conversion.take() {
+            format!("{}{}", before, text)
+        } else {
+            text
+        };
+
         self.conversion_space_count = 0;
         self.state = InputState::Empty;
         self.input_buf.text.clear();
@@ -619,7 +687,7 @@ impl InputMethodEngine {
 
         // Combine: commit first, then new input actions
         let mut result = EngineResult::consumed()
-            .with_action(EngineAction::Commit(text))
+            .with_action(EngineAction::Commit(commit_text))
             .with_action(EngineAction::HideCandidates);
         result.actions.extend(new_input_result.actions);
         result
@@ -631,9 +699,12 @@ impl InputMethodEngine {
         if !matches!(self.state, InputState::Conversion { .. }) {
             return EngineResult::not_consumed();
         }
-        // Restore remaining text from partial conversion
-        let remaining = self.remaining_after_conversion.take().unwrap_or_default();
-        let reading = format!("{}{}", self.input_buf.text, remaining);
+        // Restore remaining text from partial conversion: before + reading + after
+        let reading = if let Some((before, after)) = self.remaining_after_conversion.take() {
+            format!("{}{}{}", before, self.input_buf.text, after)
+        } else {
+            self.input_buf.text.clone()
+        };
 
         if reading.is_empty() {
             self.state = InputState::Empty;
@@ -723,16 +794,27 @@ impl InputMethodEngine {
         self.conversion_space_count = 0;
         let remaining = self.remaining_after_conversion.take();
 
-        if let Some(remaining) = remaining {
-            // Partial conversion: return remaining to composing
-            self.input_buf.text = remaining;
+        if let Some((before, after)) = remaining {
+            // Partial conversion: commit `before + selected`, return `after` to composing
+            let commit_text = format!("{}{}", before, selected_text);
+            self.input_buf.text = after;
             self.input_buf.cursor_pos = self.input_buf.text.chars().count();
             self.converters.romaji.reset();
             self.live.text.clear();
             let preedit = self.set_composing_state();
 
+            if self.input_buf.text.is_empty() {
+                self.state = InputState::Empty;
+                self.input_buf.clear();
+                return EngineResult::consumed()
+                    .with_action(EngineAction::UpdatePreedit(Preedit::new()))
+                    .with_action(EngineAction::HideCandidates)
+                    .with_action(EngineAction::HideAuxText)
+                    .with_action(EngineAction::Commit(commit_text));
+            }
+
             let mut result = EngineResult::consumed()
-                .with_action(EngineAction::Commit(selected_text))
+                .with_action(EngineAction::Commit(commit_text))
                 .with_action(EngineAction::UpdatePreedit(preedit))
                 .with_action(EngineAction::HideCandidates);
             if self.config.auto_suggest {
@@ -798,5 +880,80 @@ impl InputMethodEngine {
     fn backspace_conversion(&mut self) -> EngineResult {
         // Return to hiragana mode with the reading
         self.cancel_conversion()
+    }
+
+    /// F6: Commit as hiragana
+    pub(super) fn direct_convert_hiragana(&mut self) -> EngineResult {
+        let text = self.get_reading_for_direct_convert();
+        if text.is_empty() {
+            return EngineResult::not_consumed();
+        }
+        self.commit_direct(text)
+    }
+
+    /// F7: Commit as full-width katakana
+    pub(super) fn direct_convert_katakana(&mut self) -> EngineResult {
+        let text = self.get_reading_for_direct_convert();
+        if text.is_empty() {
+            return EngineResult::not_consumed();
+        }
+        let katakana = karukan_engine::hiragana_to_katakana(&text);
+        self.commit_direct(katakana)
+    }
+
+    /// F8: Commit as half-width katakana
+    pub(super) fn direct_convert_halfwidth_katakana(&mut self) -> EngineResult {
+        let text = self.get_reading_for_direct_convert();
+        if text.is_empty() {
+            return EngineResult::not_consumed();
+        }
+        let hw_katakana = karukan_engine::hiragana_to_halfwidth_katakana(&text);
+        self.commit_direct(hw_katakana)
+    }
+
+    /// F9: Commit as full-width ASCII (romaji)
+    pub(super) fn direct_convert_fullwidth_ascii(&mut self) -> EngineResult {
+        let raw = self.converters.romaji.raw_input().to_string();
+        if raw.is_empty() {
+            return EngineResult::not_consumed();
+        }
+        let fullwidth = karukan_engine::ascii_to_fullwidth(&raw);
+        self.commit_direct(fullwidth)
+    }
+
+    /// F10: Commit as half-width ASCII (romaji)
+    pub(super) fn direct_convert_halfwidth_ascii(&mut self) -> EngineResult {
+        let raw = self.converters.romaji.raw_input().to_string();
+        if raw.is_empty() {
+            return EngineResult::not_consumed();
+        }
+        self.commit_direct(raw)
+    }
+
+    /// Get hiragana reading from current state (Composing or Conversion)
+    fn get_reading_for_direct_convert(&mut self) -> String {
+        match &self.state {
+            InputState::Conversion { .. } => self.input_buf.text.clone(),
+            InputState::Composing { .. } => {
+                self.flush_romaji_to_composed();
+                self.input_buf.text.clone()
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Commit text directly and reset state
+    fn commit_direct(&mut self, text: String) -> EngineResult {
+        self.conversion_space_count = 0;
+        self.remaining_after_conversion = None;
+        self.state = InputState::Empty;
+        self.input_buf.text.clear();
+        self.converters.romaji.reset();
+
+        EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(Preedit::new()))
+            .with_action(EngineAction::HideCandidates)
+            .with_action(EngineAction::HideAuxText)
+            .with_action(EngineAction::Commit(text))
     }
 }

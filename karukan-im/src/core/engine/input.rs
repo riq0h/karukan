@@ -246,8 +246,19 @@ impl InputMethodEngine {
             Keysym::ESCAPE => self.cancel_composing(),
             Keysym::BACKSPACE => self.backspace_composing(),
             Keysym::DELETE => self.delete_composing(),
+            Keysym::F6 => self.direct_convert_hiragana(),
+            Keysym::F7 => self.direct_convert_katakana(),
+            Keysym::F8 => self.direct_convert_halfwidth_katakana(),
+            Keysym::F9 => self.direct_convert_fullwidth_ascii(),
+            Keysym::F10 => self.direct_convert_halfwidth_ascii(),
             Keysym::SPACE if self.input_mode == InputMode::Alphabet => self.input_char(' '),
             Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.start_conversion(),
+            // Shift+Arrow: extend/shrink selection (must be before plain Arrow)
+            Keysym::LEFT if shift_active => self.shift_select_left(),
+            Keysym::RIGHT if shift_active => self.shift_select_right(),
+            Keysym::HOME if shift_active => self.shift_select_home(),
+            Keysym::END if shift_active => self.shift_select_end(),
+            // Plain Arrow: cursor movement (clears selection)
             Keysym::LEFT => self.move_caret_left(),
             Keysym::RIGHT => self.move_caret_right(),
             Keysym::HOME => self.move_caret_home(),
@@ -270,6 +281,10 @@ impl InputMethodEngine {
                         self.input_mode = InputMode::Alphabet;
                         self.flush_romaji_to_composed();
                         self.live.text.clear();
+                    } else if !is_shift_alpha && self.input_mode == InputMode::Alphabet {
+                        // Return to Hiragana when non-shift char typed in Alphabet mode
+                        self.input_mode = InputMode::Hiragana;
+                        self.flush_romaji_to_composed();
                     }
                     let ch = if self.input_mode == InputMode::Alphabet && is_shift_alpha {
                         ch.to_ascii_uppercase()

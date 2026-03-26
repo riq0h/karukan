@@ -30,6 +30,8 @@ pub struct RomajiConverter {
     trie: TrieNode,
     buffer: String,
     output: String,
+    /// Raw ASCII input as typed by the user (for F9/F10 direct conversion)
+    raw_input: String,
 }
 
 impl RomajiConverter {
@@ -39,11 +41,15 @@ impl RomajiConverter {
             trie: build_rules(),
             buffer: String::new(),
             output: String::new(),
+            raw_input: String::new(),
         }
     }
 
     /// Push a character and attempt conversion
     pub fn push(&mut self, ch: char) -> ConversionEvent {
+        // Record raw input for F9/F10 direct conversion
+        self.raw_input.push(ch);
+
         // Handle uppercase by converting to lowercase
         let ch = ch.to_ascii_lowercase();
 
@@ -256,10 +262,16 @@ impl RomajiConverter {
         &self.buffer
     }
 
+    /// Get the raw ASCII input as typed by the user
+    pub fn raw_input(&self) -> &str {
+        &self.raw_input
+    }
+
     /// Reset the converter state
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.output.clear();
+        self.raw_input.clear();
     }
 
     /// Get both output and buffer as a single string

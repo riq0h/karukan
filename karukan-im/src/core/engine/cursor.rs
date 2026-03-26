@@ -3,13 +3,34 @@
 use super::*;
 
 impl InputMethodEngine {
-    /// Common helper for cursor movement: flush romaji, clear live conversion, set new position
+    /// Common helper for cursor movement: flush romaji, clear live conversion, set new position.
+    /// Also clears selection (plain cursor movement deselects).
     fn move_caret(&mut self, new_pos: usize) -> EngineResult {
         if !self.converters.romaji.buffer().is_empty() {
             self.flush_romaji_to_composed();
             self.converters.romaji.reset();
         }
         self.live.text.clear();
+        self.input_buf.clear_selection();
+        self.input_buf.cursor_pos = new_pos;
+        let preedit = self.set_composing_state();
+        EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(preedit))
+            .with_action(EngineAction::HideCandidates)
+            .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()))
+    }
+
+    /// Common helper for Shift+Arrow selection: flush romaji, set anchor if needed, move cursor.
+    fn shift_select(&mut self, new_pos: usize) -> EngineResult {
+        if !self.converters.romaji.buffer().is_empty() {
+            self.flush_romaji_to_composed();
+            self.converters.romaji.reset();
+        }
+        self.live.text.clear();
+        // Set anchor at current position if not already set
+        if self.input_buf.selection_anchor.is_none() {
+            self.input_buf.selection_anchor = Some(self.input_buf.cursor_pos);
+        }
         self.input_buf.cursor_pos = new_pos;
         let preedit = self.set_composing_state();
         EngineResult::consumed()
@@ -89,5 +110,29 @@ impl InputMethodEngine {
     pub(super) fn move_caret_end(&mut self) -> EngineResult {
         let total = self.input_buf.text.chars().count();
         self.move_caret(total)
+    }
+
+    /// Shift+Left: extend/shrink selection to the left
+    pub(super) fn shift_select_left(&mut self) -> EngineResult {
+        let new_pos = self.input_buf.cursor_pos.saturating_sub(1);
+        self.shift_select(new_pos)
+    }
+
+    /// Shift+Right: extend/shrink selection to the right
+    pub(super) fn shift_select_right(&mut self) -> EngineResult {
+        let total = self.input_buf.text.chars().count();
+        let new_pos = (self.input_buf.cursor_pos + 1).min(total);
+        self.shift_select(new_pos)
+    }
+
+    /// Shift+Home: extend selection to the beginning
+    pub(super) fn shift_select_home(&mut self) -> EngineResult {
+        self.shift_select(0)
+    }
+
+    /// Shift+End: extend selection to the end
+    pub(super) fn shift_select_end(&mut self) -> EngineResult {
+        let total = self.input_buf.text.chars().count();
+        self.shift_select(total)
     }
 }

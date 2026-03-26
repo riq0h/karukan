@@ -44,6 +44,7 @@ impl InputMethodEngine {
     /// Build a preedit for composing state.
     /// If live conversion text is present, shows live_text + romaji_buffer with caret at end.
     /// Otherwise shows the input buffer display with cursor-based caret.
+    /// When a selection range is active, the selected portion is shown with Highlight.
     pub(super) fn build_composing_preedit(&self) -> Preedit {
         let (display, caret) = if !self.live.text.is_empty() {
             let buffer = self.converters.romaji.buffer();
@@ -56,6 +57,27 @@ impl InputMethodEngine {
         let len = display.chars().count();
         let mut preedit = Preedit::with_text(&display);
         preedit.set_caret(caret);
+
+        // Selection range highlighting (only when no live conversion)
+        if self.live.text.is_empty() {
+            if let Some((sel_start, sel_end)) = self.input_buf.selection_range() {
+                let mut attrs = Vec::new();
+                if sel_start > 0 {
+                    attrs.push(PreeditAttribute::underline(0, sel_start));
+                }
+                attrs.push(PreeditAttribute::new(
+                    sel_start,
+                    sel_end,
+                    AttributeType::Highlight,
+                ));
+                if sel_end < len {
+                    attrs.push(PreeditAttribute::underline(sel_end, len));
+                }
+                preedit.set_attributes(attrs);
+                return preedit;
+            }
+        }
+
         preedit.set_attributes(vec![PreeditAttribute::underline(0, len)]);
         preedit
     }

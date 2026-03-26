@@ -106,8 +106,8 @@ pub struct InputMethodEngine {
     dicts: Dictionaries,
     /// Learning cache (user conversion history)
     learning: Option<LearningCache>,
-    /// Text remaining after partial conversion (cursor-based split)
-    remaining_after_conversion: Option<String>,
+    /// Text remaining after partial conversion: `(before_selection, after_selection)`
+    remaining_after_conversion: Option<(String, String)>,
     /// Number of Space presses in current conversion session
     conversion_space_count: u32,
 }
