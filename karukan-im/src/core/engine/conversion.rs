@@ -160,11 +160,61 @@ impl InputMethodEngine {
         }
     }
 
-    /// Start conversion using the current live-conversion result + dictionary candidates.
+    /// Select from auto-suggest candidates (Tab/Down in Composing state).
     ///
-    /// Called when DOWN/TAB is pressed during live conversion.  Instead of
+    /// If auto-suggest candidates are available, enters Conversion state with those
+    /// candidates (bypassing model re-inference). Falls back to `start_conversion()`
+    /// if no candidates are stored.
+    pub(super) fn select_auto_suggest(&mut self) -> EngineResult {
+        let candidates = match self.suggest_candidates.take() {
+            Some(c) if !c.is_empty() => c,
+            _ => return self.start_conversion(),
+        };
+
+        // Flush any remaining romaji
+        self.flush_romaji_to_composed();
+
+        let reading = self.input_buf.text.clone();
+        self.converters.romaji.reset();
+        self.input_buf.cursor_pos = 0;
+        self.input_buf.clear_selection();
+        self.live.text.clear();
+
+        if reading.is_empty() {
+            return EngineResult::consumed();
+        }
+
+        let candidate_list = CandidateList::new(candidates);
+
+        let selected_text = candidate_list
+            .selected_text()
+            .unwrap_or(&reading)
+            .to_string();
+
+        let preedit = Preedit::from_segments(
+            vec![PreeditSegment::highlighted(&selected_text)],
+            selected_text.chars().count(),
+        );
+
+        self.state = InputState::Conversion {
+            preedit: preedit.clone(),
+            candidates: candidate_list.clone(),
+        };
+
+        // Force show candidate window (bypass threshold)
+        self.conversion_space_count = self.config.candidate_window_threshold.max(1);
+
+        EngineResult::consumed()
+            .with_action(EngineAction::UpdatePreedit(preedit))
+            .with_action(EngineAction::ShowCandidates(candidate_list.clone()))
+            .with_action(EngineAction::UpdateAuxText(
+                self.format_aux_conversion_with_page(&reading, Some(&candidate_list)),
+            ))
+    }
+
     /// Start kanji conversion
     pub(super) fn start_conversion(&mut self) -> EngineResult {
+        self.suggest_candidates = None;
         // Flush any remaining romaji into composed_hiragana
         self.flush_romaji_to_composed();
 
@@ -701,12 +751,11 @@ impl InputMethodEngine {
         if !matches!(self.state, InputState::Conversion { .. }) {
             return EngineResult::not_consumed();
         }
-        // Restore remaining text from partial conversion: before + reading + after
-        let reading = if let Some((before, after)) = self.remaining_after_conversion.take() {
-            format!("{}{}{}", before, self.input_buf.text, after)
-        } else {
-            self.input_buf.text.clone()
-        };
+        // Restore full original text. input_buf.text is unchanged since
+        // start_conversion() and already contains the full composing text
+        // (including before/after portions of any partial selection).
+        self.remaining_after_conversion.take();
+        let reading = self.input_buf.text.clone();
 
         if reading.is_empty() {
             self.enter_empty_state();

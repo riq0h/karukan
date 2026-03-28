@@ -108,6 +108,8 @@ pub struct InputMethodEngine {
     learning: Option<LearningCache>,
     /// Text remaining after partial conversion: `(before_selection, after_selection)`
     remaining_after_conversion: Option<(String, String)>,
+    /// Auto-suggest candidates stored during Composing state for Tab/Down selection
+    suggest_candidates: Option<Vec<Candidate>>,
     /// Number of Space presses in current conversion session
     conversion_space_count: u32,
 }
@@ -131,6 +133,7 @@ impl InputMethodEngine {
             dicts: Dictionaries::default(),
             learning: None,
             remaining_after_conversion: None,
+            suggest_candidates: None,
             conversion_space_count: 0,
         }
     }
@@ -235,6 +238,7 @@ impl InputMethodEngine {
         self.converters.romaji.reset();
         self.live.text.clear();
         self.remaining_after_conversion = None;
+        self.suggest_candidates = None;
         self.conversion_space_count = 0;
         // Revert to hiragana on Empty transition so that the next input
         // session starts in hiragana mode (Shift+letter can re-enter alphabet).

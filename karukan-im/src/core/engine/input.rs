@@ -26,6 +26,7 @@ impl InputMethodEngine {
         // When auto_suggest is disabled, skip candidate display and aux text during composing
         if !self.config.auto_suggest {
             self.live.text.clear();
+            self.suggest_candidates = None;
             let preedit = self.set_composing_state();
             return EngineResult::consumed()
                 .with_action(EngineAction::UpdatePreedit(preedit))
@@ -55,11 +56,13 @@ impl InputMethodEngine {
             let mut all_candidates = self.lookup_learning_candidates(&reading);
             append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
             if all_candidates.is_empty() {
+                self.suggest_candidates = None;
                 return EngineResult::consumed()
                     .with_action(EngineAction::UpdatePreedit(preedit))
                     .with_action(EngineAction::HideCandidates)
                     .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()));
             }
+            self.suggest_candidates = Some(all_candidates.clone());
             return EngineResult::consumed()
                 .with_action(EngineAction::UpdatePreedit(preedit))
                 .with_action(EngineAction::ShowCandidates(CandidateList::new(
@@ -79,8 +82,10 @@ impl InputMethodEngine {
             let mut all_candidates = self.lookup_learning_candidates(&reading);
             append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
             if all_candidates.is_empty() {
+                self.suggest_candidates = None;
                 result = result.with_action(EngineAction::HideCandidates);
             } else {
+                self.suggest_candidates = Some(all_candidates.clone());
                 result = result.with_action(EngineAction::ShowCandidates(CandidateList::new(
                     all_candidates,
                 )));
@@ -102,6 +107,7 @@ impl InputMethodEngine {
         append_candidates_dedup(&mut all_candidates, model_candidates);
         // Then dictionary candidates
         append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
+        self.suggest_candidates = Some(all_candidates.clone());
         let aux = self.format_aux_suggest(&self.input_buf.text.clone());
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(preedit))
@@ -250,7 +256,8 @@ impl InputMethodEngine {
             Keysym::F9 => self.direct_convert_fullwidth_ascii(),
             Keysym::F10 => self.direct_convert_halfwidth_ascii(),
             Keysym::SPACE if self.input_mode == InputMode::Alphabet => self.input_char(' '),
-            Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.start_conversion(),
+            Keysym::SPACE => self.start_conversion(),
+            Keysym::DOWN | Keysym::TAB => self.select_auto_suggest(),
             // Shift+Arrow: extend/shrink selection (must be before plain Arrow)
             Keysym::LEFT if shift_active => self.shift_select_left(),
             Keysym::RIGHT if shift_active => self.shift_select_right(),

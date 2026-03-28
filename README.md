@@ -136,6 +136,16 @@ fcitx5がアプリ側のイベント等で `reset()` を呼んだ際、従来は
 
 - 対象: `karukan-engine/src/romaji/converter.rs`, `karukan-im/src/core/engine/cursor.rs`
 
+#### 12. Tab/Downによるオートサジェスト候補の選択
+入力中に表示されるオートサジェスト候補（学習キャッシュ・モデル推論・辞書）をTab/Downキーで直接選択できるようにしました。従来はこれらの候補は表示のみで選択不可能でしたが、Tab/Downで候補を選択するとConversion状態に遷移し、Up/Downで移動、Enter/Spaceで確定できます。Spaceキーは従来通りビームサーチによるフル変換を実行するため、用途に応じた使い分けが可能です。
+
+| キー | Composing状態での動作 |
+|------|----------------------|
+| Space | フル変換（モデル再推論） |
+| Tab/Down | オートサジェスト候補を選択（再推論なし） |
+
+- 対象: `karukan-im/src/core/engine/mod.rs`, `input.rs`, `conversion.rs`
+
 ### 辞書の拡張
 
 jawiki（Wikipedia固有名詞）のシステム辞書統合や、顔文字・絵文字辞書の導入手順については [辞書セットアップガイド](docs/dictionary-setup.md) を参照してください。
