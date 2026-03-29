@@ -314,6 +314,13 @@ impl RomajiConverter {
         self.pending_n_reclaim = false;
     }
 
+    /// Place a character directly into the buffer without going through conversion.
+    /// Used by the IME to reclaim a passthrough consonant from input_buf so that
+    /// it can combine with the next keystroke.
+    pub fn reclaim_to_buffer(&mut self, ch: char) {
+        self.buffer.push(ch);
+    }
+
     /// Get both output and buffer as a single string
     pub fn full_text(&self) -> String {
         format!("{}{}", self.output, self.buffer)

@@ -71,6 +71,21 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
+        // After deletion, if the character now before the cursor is an ASCII
+        // lowercase letter (a passthrough consonant), reclaim it from input_buf
+        // into the romaji buffer so it can combine with the next keystroke.
+        // Example: "なmこ" → backspace "こ" → "なm" → reclaim 'm' into buffer
+        //          → type 'a' → buffer "ma" → "ま" → "なま"
+        if self.input_buf.cursor_pos > 0 && self.input_mode != InputMode::Alphabet {
+            if let Some(prev_char) = self.input_buf.text.chars().nth(self.input_buf.cursor_pos - 1)
+            {
+                if prev_char.is_ascii_lowercase() {
+                    self.input_buf.remove_char_before_cursor();
+                    self.converters.romaji.reclaim_to_buffer(prev_char);
+                }
+            }
+        }
+
         if let Some(result) = self.try_reset_if_empty() {
             return result;
         }

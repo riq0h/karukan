@@ -167,3 +167,59 @@ fn test_backspace_reclaim_with_preceding_hiragana() {
     engine.process_key(&press('a'));
     assert_eq!(engine.preedit().unwrap().text(), "かは");
 }
+
+#[test]
+fn test_backspace_reclaims_passthrough_after_hiragana_deletion() {
+    // Typing "namko" produces "なmこ" (m passed through, ko → こ).
+    // Deleting "こ" should reclaim 'm' from input_buf into romaji buffer
+    // so that typing "a" produces "なま", not "なmあ".
+    let mut engine = InputMethodEngine::new();
+
+    // Type "namko" → "なmこ"
+    for ch in "namko".chars() {
+        engine.process_key(&press(ch));
+    }
+    assert_eq!(engine.preedit().unwrap().text(), "なmこ");
+
+    // Backspace → delete "こ", reclaim 'm' into buffer → display "なm"
+    engine.process_key(&press_key(Keysym::BACKSPACE));
+    assert_eq!(engine.preedit().unwrap().text(), "なm");
+
+    // Type 'a' → buffer "ma" → "ま" → "なま"
+    engine.process_key(&press('a'));
+    assert_eq!(
+        engine.preedit().unwrap().text(),
+        "なま",
+        "Should produce なま, not なmあ"
+    );
+
+    // Continue with "ko" → "なまこ"
+    engine.process_key(&press('k'));
+    engine.process_key(&press('o'));
+    assert_eq!(engine.preedit().unwrap().text(), "なまこ");
+}
+
+#[test]
+fn test_backspace_reclaim_n_before_consonant() {
+    // Typing "ns" triggers n-before-consonant (ん + s).
+    // Backspacing 's' from romaji buffer reclaims 'ん' → 'n'.
+    // Then typing 'a' gives "な", not "んあ".
+    let mut engine = InputMethodEngine::new();
+
+    // Type "ns" → "ん" + buffer="s"
+    engine.process_key(&press('n'));
+    engine.process_key(&press('s'));
+    assert_eq!(engine.preedit().unwrap().text(), "んs");
+
+    // Backspace → reclaim ん → n in buffer
+    engine.process_key(&press_key(Keysym::BACKSPACE));
+    assert_eq!(engine.preedit().unwrap().text(), "n");
+
+    // Type 'a' → "な"
+    engine.process_key(&press('a'));
+    assert_eq!(
+        engine.preedit().unwrap().text(),
+        "な",
+        "Should produce な, not んあ"
+    );
+}
