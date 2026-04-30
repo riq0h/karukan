@@ -8,6 +8,7 @@ karukan-imの辞書を拡張するための辞書導入手順です。
 | --------------------------- | ---------- | -------------------------------------- |
 | システム辞書（SudachiDict） | 約266万    | 標準の漢字変換（要ダウンロード）       |
 | jawiki辞書                  | 約71万     | Wikipedia由来の固有名詞・専門用語      |
+| Mozc OSS辞書                | 約42万     | IPAdic由来の副助詞・接尾辞・連体詞等   |
 | 顔文字・絵文字辞書          | 約1.3万    | 顔文字・Unicode絵文字                  |
 | 記号辞書（Mozc symbol）     | 約4800     | 特殊記号・括弧・矢印・数学記号等       |
 
@@ -95,10 +96,87 @@ print(f"Input: {count}, Kept: {kept}, Removed: {count - kept}", file=sys.stderr)
 PYEOF
 ```
 
-### 1.4 統合辞書のビルド
+### 1.4 Mozc OSS辞書のダウンロード
+
+SudachiDictにはカバーされていない副助詞・接尾辞・連体詞・準体助詞などのIPAdic由来の基礎語彙を補完します。たとえば「など → 等」はSudachiDictに存在しないため、Mozc OSS辞書から取得します。
 
 ```bash
-# システム辞書ダンプとjawikiエントリをJSON形式に統合
+# Mozc OSS辞書 (dictionary00.txt〜dictionary09.txt) のダウンロード
+mkdir -p /tmp/mozc-oss-dict
+cd /tmp/mozc-oss-dict
+for i in 00 01 02 03 04 05 06 07 08 09; do
+    curl -sL -o "dictionary${i}.txt" \
+      "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/dictionary${i}.txt" &
+done
+wait
+```
+
+### 1.5 Mozc OSSエントリのフィルタリング
+
+Mozc OSS形式（5カラム: `読み\tlid\trid\tコスト\t表記`）から `読み\t表記\tコスト` の3カラムTSVに変換し、ひらがな読みのみ抽出します。同一の `(読み, 表記)` ペアは最初の出現を残します。
+
+```bash
+python3 << 'PYEOF' > /tmp/mozc-oss-filtered.tsv
+import sys, glob
+seen = set()
+count = 0
+for path in sorted(glob.glob('/tmp/mozc-oss-dict/dictionary*.txt')):
+    with open(path) as f:
+        for line in f:
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 5:
+                continue
+            reading, _lid, _rid, cost, surface = parts[:5]
+            if not reading or not surface or reading == surface:
+                continue
+            # ひらがな読みのみ（ーを許可）
+            if not all('぀' <= c <= 'ゟ' or c == 'ー' for c in reading):
+                continue
+            try:
+                cost_int = int(cost)
+            except ValueError:
+                continue
+            key = (reading, surface)
+            if key in seen:
+                continue
+            seen.add(key)
+            print(f"{reading}\t{surface}\t{cost_int}")
+            count += 1
+print(f"# Output: {count} entries", file=sys.stderr)
+PYEOF
+```
+
+### 1.6 既存辞書との重複除去
+
+```bash
+python3 << 'PYEOF' > /tmp/mozc-oss-deduped.tsv
+import sys
+sysdict = set()
+with open("/tmp/sysdict-dump.tsv") as f:
+    for line in f:
+        parts = line.split('\t')
+        if len(parts) >= 2:
+            sysdict.add((parts[0], parts[1]))
+
+count = kept = 0
+with open("/tmp/mozc-oss-filtered.tsv") as f:
+    for line in f:
+        line = line.rstrip('\n')
+        parts = line.split('\t')
+        if len(parts) < 3:
+            continue
+        count += 1
+        if (parts[0], parts[1]) not in sysdict:
+            kept += 1
+            print(line)
+print(f"Input: {count}, Kept: {kept}, Removed: {count - kept}", file=sys.stderr)
+PYEOF
+```
+
+### 1.7 統合辞書のビルド
+
+```bash
+# システム辞書ダンプ + jawiki + Mozc OSS をJSON形式に統合
 python3 << 'PYEOF'
 import json, sys
 from collections import OrderedDict
@@ -128,6 +206,20 @@ with open("/tmp/jawiki-deduped.tsv") as f:
             continue
         if (parts[0], parts[1]) not in sys_pairs:
             entries.setdefault(parts[0], []).append({"surface": parts[1], "score": 6000.0})
+            sys_pairs.add((parts[0], parts[1]))
+
+# Mozc OSSエントリの追加（コストをそのままスコアとして使用）
+with open("/tmp/mozc-oss-deduped.tsv") as f:
+    for line in f:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) < 3 or not parts[0] or not parts[1]:
+            continue
+        try:
+            cost = float(parts[2])
+        except ValueError:
+            continue
+        if (parts[0], parts[1]) not in sys_pairs:
+            entries.setdefault(parts[0], []).append({"surface": parts[1], "score": cost})
 
 result = [{"reading": r, "candidates": c} for r, c in entries.items()]
 with open("/tmp/merged-dict.json", "w") as f:
@@ -138,6 +230,22 @@ PYEOF
 # バックアップと再ビルド（karukanリポジトリのルートから実行）
 cp ~/.local/share/karukan-im/dict.bin ~/.local/share/karukan-im/dict.bin.backup
 cargo run --release --bin karukan-dict -- build /tmp/merged-dict.json -o ~/.local/share/karukan-im/dict.bin
+```
+
+### 1.8 確認
+
+```bash
+cargo run --release --bin karukan-dict -- view -q など ~/.local/share/karukan-im/dict.bin
+```
+
+期待される出力（`など → 等` がスコア2077で含まれる）:
+
+```
+など	ナド	0
+など	等	2077
+など	など	5291
+など	奈土	9219
+など	抔	9433
 ```
 
 ## 2. 顔文字・絵文字辞書の導入
@@ -449,11 +557,12 @@ fcitx5 -r -d
 
 ## 辞書ソース
 
-| 辞書                 | ライセンス   | URL                                               |
-| -------------------- | ------------ | ------------------------------------------------- |
-| mozcdic-ut-jawiki    | Apache-2.0   | https://github.com/utuhiro78/mozcdic-ut-jawiki    |
-| emoji-ime-dictionary | MIT          | https://github.com/peaceiris/emoji-ime-dictionary |
-| kaomoji-json         | -            | https://github.com/6/kaomoji-json                 |
-| tiwanari/emoticon    | MIT          | https://github.com/tiwanari/emoticon              |
-| Mozc emoticon.tsv    | BSD-3-Clause | https://github.com/google/mozc                    |
-| Mozc symbol.tsv      | BSD-3-Clause | https://github.com/google/mozc                    |
+| 辞書                 | ライセンス                          | URL                                               |
+| -------------------- | ----------------------------------- | ------------------------------------------------- |
+| mozcdic-ut-jawiki    | Apache-2.0                          | https://github.com/utuhiro78/mozcdic-ut-jawiki    |
+| Mozc OSS dictionary  | BSD-3-Clause + NAIST/ICOT/PD        | https://github.com/google/mozc/tree/master/src/data/dictionary_oss |
+| emoji-ime-dictionary | MIT                                 | https://github.com/peaceiris/emoji-ime-dictionary |
+| kaomoji-json         | -                                   | https://github.com/6/kaomoji-json                 |
+| tiwanari/emoticon    | MIT                                 | https://github.com/tiwanari/emoticon              |
+| Mozc emoticon.tsv    | BSD-3-Clause                        | https://github.com/google/mozc                    |
+| Mozc symbol.tsv      | BSD-3-Clause                        | https://github.com/google/mozc                    |

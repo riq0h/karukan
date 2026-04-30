@@ -155,6 +155,15 @@ fcitx5がアプリ側のイベント等で `reset()` を呼んだ際、従来は
 
 - 対象: `karukan-im/src/core/engine/mod.rs`, `input.rs`, `conversion.rs`
 
+#### 14. モデル初期ロードのバックグラウンドスレッド化
+初回キー入力時のモデル・辞書ロードをfcitx5メインスレッド上で同期実行していたため、XIMフロントエンド経由のクライアント（特にalacritty等のターミナル）がロード完了まで完全フリーズする問題がありました。OS再起動直後でファイルキャッシュが冷えている状態だと10秒以上ブロックすることもあり、ウインドウごとに `KarukanState` がインスタンス化されるため新しいalacrittyウインドウを開くたびに再発していました。
+
+`karukan_engine_init()` をバックグラウンドスレッドで実行し、メインスレッドは即座にリターンするように変更しました。ロード中のキー入力は消費して破棄し（生のローマ字がアプリに漏れるのを防止）、ロード完了は `EventDispatcher::scheduleWithContext()` 経由でメインスレッドにUI更新（「Loading model...」表示クリア）をポストします。`InputContext::watch()` の `TrackableObjectReference` でウインドウ消滅後のUI更新を抑止し、`KarukanState` デストラクタで必ずスレッドをjoinして `rustEngine_` への use-after-free を防いでいます。
+
+これによりfcitx5メインスレッドのブロック時間が数秒〜数十秒からほぼゼロになり、XIM経由のクライアントがロード中にフリーズしなくなりました。
+
+- 対象: `karukan-im/fcitx5-addon/src/karukan.h`, `karukan-im/fcitx5-addon/src/karukan.cpp`
+
 ### 辞書の拡張
 
-jawiki（Wikipedia固有名詞）のシステム辞書統合や、顔文字・絵文字辞書の導入手順については [辞書セットアップガイド](docs/dictionary-setup.md) を参照してください。
+jawiki（Wikipedia固有名詞）・Mozc OSS辞書（IPAdic由来の副助詞・接尾辞・連体詞補完、例: `など → 等`）のシステム辞書統合や、顔文字・絵文字辞書・記号辞書の導入手順については [辞書セットアップガイド](docs/dictionary-setup.md) を参照してください。
