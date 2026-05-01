@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <thread>
+#include <vector>
 
 #include <fcitx-utils/eventdispatcher.h>
 #include <fcitx/addonfactory.h>
@@ -76,6 +77,17 @@ private:
     std::atomic<bool> initCompleted_{false};
     std::atomic<int> initResult_{0};
     std::thread initThread_;
+
+    // Keys typed during async init are queued here and replayed through the
+    // engine once init completes, so the user's input isn't lost. Touched
+    // only on the main thread (keyEvent + dispatcher callback) so no mutex
+    // is needed.
+    struct QueuedKey {
+        uint32_t keysym;
+        uint32_t state;
+        int isRelease;
+    };
+    std::vector<QueuedKey> pendingKeys_;
 };
 
 // Main engine class

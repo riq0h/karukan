@@ -158,9 +158,11 @@ fcitx5がアプリ側のイベント等で `reset()` を呼んだ際、従来は
 #### 14. モデル初期ロードのバックグラウンドスレッド化
 初回キー入力時のモデル・辞書ロードをfcitx5メインスレッド上で同期実行していたため、XIMフロントエンド経由のクライアント（特にalacritty等のターミナル）がロード完了まで完全フリーズする問題がありました。OS再起動直後でファイルキャッシュが冷えている状態だと10秒以上ブロックすることもあり、ウインドウごとに `KarukanState` がインスタンス化されるため新しいalacrittyウインドウを開くたびに再発していました。
 
-`karukan_engine_init()` をバックグラウンドスレッドで実行し、メインスレッドは即座にリターンするように変更しました。ロード中のキー入力は消費して破棄し（生のローマ字がアプリに漏れるのを防止）、ロード完了は `EventDispatcher::scheduleWithContext()` 経由でメインスレッドにUI更新（「Loading model...」表示クリア）をポストします。`InputContext::watch()` の `TrackableObjectReference` でウインドウ消滅後のUI更新を抑止し、`KarukanState` デストラクタで必ずスレッドをjoinして `rustEngine_` への use-after-free を防いでいます。
+`karukan_engine_init()` をバックグラウンドスレッドで実行し、メインスレッドは即座にリターンするように変更しました。ロード中に押されたキーは `pendingKeys_` キューに保持しておき、ロード完了時にディスパッチャーコールバックがメインスレッド上でキューを順次エンジンに流し込みます。各キー処理ごとに `updateUI()` を呼ぶことで、preedit/commit/候補が逐次fcitx5経由でクライアントに反映され、同期ロード時にX serverイベントキューが提供していた「キー単位のアニメーション再生」と同等の挙動を得られます。
 
-これによりfcitx5メインスレッドのブロック時間が数秒〜数十秒からほぼゼロになり、XIM経由のクライアントがロード中にフリーズしなくなりました。
+ロード完了は `EventDispatcher::scheduleWithContext()` 経由でメインスレッドにポストします。`InputContext::watch()` の `TrackableObjectReference` でウインドウ消滅後のコールバック実行を抑止し、`KarukanState` デストラクタで必ずスレッドをjoinして `rustEngine_` への use-after-free を防いでいます。
+
+これによりfcitx5メインスレッドのブロック時間が数秒〜数十秒からほぼゼロになり、XIM経由のクライアントがロード中にフリーズしなくなりました。ロード中の入力も失われずに反映されます。
 
 - 対象: `karukan-im/fcitx5-addon/src/karukan.h`, `karukan-im/fcitx5-addon/src/karukan.cpp`
 

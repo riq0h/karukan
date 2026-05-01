@@ -78,6 +78,7 @@ KarukanState::~KarukanState() {
     if (initThread_.joinable()) {
         initThread_.join();
     }
+    pendingKeys_.clear();
     if (rustEngine_) {
         karukan_engine_free(rustEngine_);
     }
@@ -88,77 +89,8 @@ void KarukanState::keyEvent(KeyEvent& keyEvent) {
         return;
     }
 
-    // Initialize on first use. Loading the model + dictionary on the fcitx5
-    // main thread would block all XIM clients (notably alacritty) for several
-    // seconds after a cold-cache reboot, since XIM is synchronous. Run the
-    // init on a background thread; while it's running we consume keys to
-    // suppress raw output but otherwise return immediately so XIM clients
-    // don't freeze.
-    if (!initCompleted_.load(std::memory_order_acquire)) {
-        if (!initInProgress_.load(std::memory_order_acquire)) {
-            // First key event: kick off background init and show loading aux.
-            {
-                auto& inputPanel = ic_->inputPanel();
-                Text aux;
-                aux.append("Karukan: Loading model...");
-                inputPanel.setAuxUp(aux);
-                ic_->updatePreedit();
-                ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
-            }
-
-            initInProgress_.store(true, std::memory_order_release);
-
-            ::KarukanEngine* rustEngine = rustEngine_;
-            EventDispatcher* dispatcher = engine_->eventDispatcher();
-            auto icRef = ic_->watch();
-
-            initThread_ = std::thread([this, rustEngine, dispatcher, icRef]() {
-                int result = karukan_engine_init(rustEngine);
-                initResult_.store(result, std::memory_order_relaxed);
-                initCompleted_.store(true, std::memory_order_release);
-
-                // Wake the main loop so the loading message refreshes even
-                // if the user isn't pressing keys. Capture by value;
-                // scheduleWithContext drops the call if the InputContext
-                // (and our state) has been destroyed.
-                dispatcher->scheduleWithContext(icRef, [icRef, result]() {
-                    auto* ic = icRef.get();
-                    if (!ic) {
-                        return;
-                    }
-                    auto& inputPanel = ic->inputPanel();
-                    if (result == 0) {
-                        inputPanel.setAuxUp(Text());
-                    } else {
-                        Text aux;
-                        aux.append("Karukan: Model load failed");
-                        inputPanel.setAuxUp(aux);
-                    }
-                    ic->updatePreedit();
-                    ic->updateUserInterface(UserInterfaceComponent::InputPanel);
-                });
-            });
-        }
-
-        // Init still running: swallow the key (don't pass through to the app)
-        // so the user doesn't see raw romaji while waiting.
-        keyEvent.filterAndAccept();
-        return;
-    }
-
-    // Init completed: reap the thread once and clear the in-progress flag.
-    if (initInProgress_.load(std::memory_order_acquire)) {
-        if (initThread_.joinable()) {
-            initThread_.join();
-        }
-        initInProgress_.store(false, std::memory_order_release);
-        // If init failed, leave the failure aux in place and pass keys through.
-        if (initResult_.load(std::memory_order_relaxed) != 0) {
-            return;
-        }
-    }
-
-    // Convert key event
+    // Extract key fields up front so we can either queue them (during async
+    // init) or pass them to the engine (normal path) without re-parsing.
     uint32_t keysym = keyEvent.key().sym();
     uint32_t state = 0;
 
@@ -176,6 +108,94 @@ void KarukanState::keyEvent(KeyEvent& keyEvent) {
     }
 
     int isRelease = keyEvent.isRelease() ? 1 : 0;
+
+    // Initialize on first use. Loading the model + dictionary on the fcitx5
+    // main thread would block all XIM clients (notably alacritty) for several
+    // seconds after a cold-cache reboot, since XIM is synchronous. Run the
+    // init on a background thread; queue keys typed during loading and
+    // replay them once init completes so the user's input isn't lost.
+    bool inProgress = initInProgress_.load(std::memory_order_acquire);
+    bool completed = initCompleted_.load(std::memory_order_acquire);
+
+    if (!completed && !inProgress) {
+        // First key event: kick off background init and show loading aux.
+        {
+            auto& inputPanel = ic_->inputPanel();
+            Text aux;
+            aux.append("Karukan: Loading model...");
+            inputPanel.setAuxUp(aux);
+            ic_->updatePreedit();
+            ic_->updateUserInterface(UserInterfaceComponent::InputPanel);
+        }
+
+        initInProgress_.store(true, std::memory_order_release);
+        inProgress = true;
+
+        ::KarukanEngine* rustEngine = rustEngine_;
+        EventDispatcher* dispatcher = engine_->eventDispatcher();
+        auto icRef = ic_->watch();
+
+        initThread_ = std::thread([this, rustEngine, dispatcher, icRef]() {
+            int result = karukan_engine_init(rustEngine);
+            initResult_.store(result, std::memory_order_relaxed);
+            initCompleted_.store(true, std::memory_order_release);
+
+            // Schedule completion handling on the main thread. scheduleWithContext
+            // drops the call if the InputContext (and our state) has been destroyed.
+            dispatcher->scheduleWithContext(icRef, [this, icRef, result]() {
+                // Reap the init thread (we're now on the main thread).
+                if (initThread_.joinable()) {
+                    initThread_.join();
+                }
+
+                auto* ic = icRef.get();
+                if (!ic) {
+                    pendingKeys_.clear();
+                    initInProgress_.store(false, std::memory_order_release);
+                    return;
+                }
+
+                auto& inputPanel = ic->inputPanel();
+                if (result == 0) {
+                    inputPanel.setAuxUp(Text());
+                } else {
+                    Text aux;
+                    aux.append("Karukan: Model load failed");
+                    inputPanel.setAuxUp(aux);
+                }
+
+                // Replay queued keys through the engine and update the UI
+                // after each one so the user sees the preedit/commits build up
+                // gradually, matching the synchronous-load experience where
+                // X server's event queue feeds keys to fcitx5 one at a time.
+                // Skip on init failure.
+                if (result == 0) {
+                    for (const auto& qk : pendingKeys_) {
+                        karukan_engine_process_key(rustEngine_, qk.keysym, qk.state,
+                                                   qk.isRelease);
+                        updateUI();
+                    }
+                }
+                pendingKeys_.clear();
+
+                initInProgress_.store(false, std::memory_order_release);
+            });
+        });
+    }
+
+    // While init is in progress (including the brief window between the
+    // background thread completing and the dispatcher callback running),
+    // queue the key and consume it. The dispatcher callback drains the queue.
+    if (initInProgress_.load(std::memory_order_acquire)) {
+        pendingKeys_.push_back({.keysym = keysym, .state = state, .isRelease = isRelease});
+        keyEvent.filterAndAccept();
+        return;
+    }
+
+    // If init failed, pass keys through to the application.
+    if (initResult_.load(std::memory_order_relaxed) != 0) {
+        return;
+    }
 
     // Capture surrounding text at input start (Empty state) for accurate context.
     // For apps without SurroundingText capability (terminals), this clears
