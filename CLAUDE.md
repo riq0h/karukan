@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 karukan is a Linux Japanese Input Method system consisting of three Rust crates:
 
-- **karukan-engine**: Core library — romaji-to-hiragana conversion, neural kana-kanji conversion via llama.cpp, system dictionary, learning cache
+- **karukan-engine**: Core library — romaji-to-hiragana conversion, neural kana-kanji conversion via llama.cpp, system dictionary, learning cache, candidate rewriter (width/case/symbol variants)
 - **karukan-cli**: CLI tools and server — dictionary builder, Sudachi converter, dict viewer, AJIMEE-Bench, HTTP API server
 - **karukan-im**: fcitx5 IME addon using karukan-engine for Japanese input on Linux
 
@@ -91,9 +91,14 @@ cargo clippy --workspace  # Lint all crates
   - `hf_download.rs` — HuggingFace model download
   - `model_config.rs` — models.toml registry
   - `error.rs` — KanjiError type
+- `rewriter/` — Candidate rewriter system
+  - `mod.rs` — Rewriter trait, RewriterChain, default_chain()
+  - `alphabet.rs` — Alphabet width/case variants (e.g. `abc` → `ABC`, `ａｂｃ`, `ＡＢＣ`)
+  - `half_katakana.rs` — Half-width katakana variants (e.g. `がっこう` → `ｶﾞｯｺｳ`)
+  - `symbol.rs` — Symbol variant chains and reading→symbol lookup (Mozc symbol.tsv derived)
 - `dict.rs` — Double-array trie system dictionary
 - `learning.rs` — Learning cache (user conversion history, TSV persistence, recency+frequency scoring)
-- `kana.rs` — Hiragana/katakana utilities
+- `kana.rs` — Hiragana/katakana utilities, full-width/half-width conversion functions
 
 ### karukan-cli (`karukan-cli/src/`)
 
@@ -134,7 +139,7 @@ cargo clippy --workspace  # Lint all crates
 - Model registry defined in `karukan-engine/models.toml`; default models use Q5_K_M quantization
 - Partial conversion uses a "bake" model: Shift+Arrow to select a portion → Space to convert → Enter bakes the result into the composing buffer (no immediate commit). The user can convert multiple portions in any order, then a final Enter in Composing commits the entire text. Full-text learning (`original_composing_text` → final result) is recorded at final commit.
 - Shift+Arrow works in both Composing and Conversion states. In Conversion, it cancels the conversion and returns to Composing with selection.
-- Learning cache records user-selected conversions and boosts them on subsequent conversions; candidate priority: Learning → User Dictionary → Model → System Dictionary → Fallback
+- Learning cache records user-selected conversions and boosts them on subsequent conversions; candidate priority: Learning → User Dictionary → Model → System Dictionary → Fallback → Rewriter
 - Learning cache is persisted as TSV (`~/.local/share/karukan-im/learning.tsv`); saved on deactivate and engine free, not on every commit
 - Learning score uses recency-weighted formula (mozc-inspired): `recency * 10.0 + ln(1 + frequency)`; eviction removes lowest-score entries when over `max_entries` (default: 10,000)
 

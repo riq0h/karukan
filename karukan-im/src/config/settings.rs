@@ -40,7 +40,6 @@ pub enum StrategyMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversionSettings {
     /// Conversion strategy mode (adaptive, light, main)
-    #[serde(default)]
     pub strategy: StrategyMode,
     /// Number of candidates to show on Space conversion
     pub num_candidates: usize,
@@ -64,22 +63,13 @@ pub struct ConversionSettings {
     /// Number of threads for llama.cpp inference (0 = all cores, llama.cpp default)
     pub n_threads: u32,
     /// Show auto-suggest candidates while typing (false = show only on Space conversion)
-    #[serde(default = "default_true")]
     pub auto_suggest: bool,
     /// Number of Space presses before showing the candidate window (0 = always show)
-    #[serde(default = "default_candidate_window_threshold")]
     pub candidate_window_threshold: u32,
     /// Show auxiliary text (inference time, dictionary source, etc.)
-    #[serde(default = "default_true")]
     pub show_aux_text: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_candidate_window_threshold() -> u32 {
-    3
+    /// Enable live conversion at startup (Ctrl+Shift+L still toggles at runtime)
+    pub live_conversion: bool,
 }
 
 /// Learning cache settings

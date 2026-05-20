@@ -8,10 +8,13 @@ mod basic;
 mod candidates;
 mod conversion;
 mod cursor;
+mod emoji;
 mod katakana;
+mod learning;
 mod live_conversion;
 mod mode_toggle;
 mod passthrough;
+mod rewriter;
 mod strategy;
 mod surrounding;
 
@@ -33,6 +36,11 @@ fn press_shift(ch: char) -> KeyEvent {
         KeyModifiers::new().with_shift(true),
         true,
     )
+}
+
+#[allow(dead_code)]
+fn press_shift_key(keysym: Keysym) -> KeyEvent {
+    KeyEvent::new(keysym, KeyModifiers::new().with_shift(true), true)
 }
 
 fn press_ctrl(keysym: Keysym) -> KeyEvent {

@@ -1,14 +1,11 @@
 //! Composing input handling (Empty and Composing states)
 
-use karukan_engine::ConversionEvent;
-
 use super::*;
 
-/// Append candidates to `target`, skipping duplicates and updating indices.
+/// Append candidates to `target`, skipping duplicates by text.
 fn append_candidates_dedup(target: &mut Vec<Candidate>, source: Vec<Candidate>) {
-    for mut c in source {
+    for c in source {
         if !target.iter().any(|existing| existing.text == c.text) {
-            c.index = target.len();
             target.push(c);
         }
     }
@@ -49,12 +46,15 @@ impl InputMethodEngine {
             };
 
         let Some((candidates, reading)) = candidates else {
-            // No useful AI suggestion — still show learning + dictionary candidates
+            // No useful AI suggestion — still show learning + dictionary + rule-based
+            // rewriter variants. The rewriter path produces mozc-style symbol variants
+            // (e.g. `「` → `『`, `【`, ...) for symbol-only inputs where the model is skipped.
             self.live.text.clear();
             let preedit = self.set_composing_state();
             let reading = self.input_buf.text.clone();
             let mut all_candidates = self.lookup_learning_candidates(&reading);
             append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
+            append_candidates_dedup(&mut all_candidates, self.lookup_rewriter_variants(&reading));
             if all_candidates.is_empty() {
                 self.suggest_candidates = None;
                 return EngineResult::consumed()
@@ -125,6 +125,27 @@ impl InputMethodEngine {
                 .with_action(EngineAction::Commit("\u{3000}".to_string()));
         }
 
+        // `:` from Empty state enters emoji shortcode mode — `:pien` stays
+        // as `:pien` literally (no romaji conversion) while emoji candidates
+        // are surfaced via the rewriter. The mode auto-exits back to Hiragana
+        // on Escape or commit, so the user's next word lands in kana mode
+        // again without an explicit toggle.
+        //
+        // Two keysym shapes can produce `:` depending on how fcitx5
+        // resolves the layout: (a) the X11 `colon` keysym (0x003A)
+        // arriving directly, or (b) the `semicolon` keysym (0x003B)
+        // with shift held. Accept both so we don't depend on which
+        // shape the upstream stack happens to emit.
+        let typed_colon =
+            key.to_char() == Some(':') || (shift_active && key.keysym == Keysym(b';' as u32));
+        if typed_colon
+            && !key.modifiers.control_key
+            && !key.modifiers.alt_key
+            && self.input_mode != InputMode::Alphabet
+        {
+            return self.start_emoji_mode();
+        }
+
         // Only handle printable characters without modifiers (except shift)
         if let Some(ch) = key.to_char()
             && !key.modifiers.control_key
@@ -159,19 +180,13 @@ impl InputMethodEngine {
             self.input_buf.insert(&ch.to_string());
         } else {
             let prev_output_len = 0;
-            let event = self.converters.romaji.push(ch);
+            let _event = self.converters.romaji.push(ch);
             let romaji_buffer = self.converters.romaji.buffer().to_string();
 
-            // Check for PassThrough FIRST: the converter adds PassThrough chars
-            // to its output, so we must check the event before checking output emptiness.
-            // Exception: digits should enter Composing so users can type "20世紀" etc.
-            if let ConversionEvent::PassThrough(c) = event
-                && !c.is_ascii_digit()
-            {
-                self.converters.romaji.reset();
-                return EngineResult::consumed().with_action(EngineAction::Commit(c.to_string()));
-            }
-            // For digits, fall through to enter Composing normally
+            // PassThrough chars (no romaji rule, e.g. `'`, `;`, `<`, `(`) used to
+            // auto-commit immediately, but that prevented users from composing
+            // sequences like `「」` or getting symbol variants. Treat them like
+            // digits — let them enter Composing and accumulate in the preedit.
 
             if self.converters.romaji.output().is_empty() && romaji_buffer.is_empty() {
                 return EngineResult::not_consumed();
@@ -244,7 +259,11 @@ impl InputMethodEngine {
             Keysym::F9 => self.direct_convert_fullwidth_ascii(),
             Keysym::F10 => self.direct_convert_halfwidth_ascii(),
             Keysym::SPACE if self.input_mode == InputMode::Alphabet => self.input_char(' '),
-            Keysym::SPACE => self.start_conversion(),
+            // Shift+Space: conversion that bypasses the learning cache (mozc-style
+            // PredictAndConvert). Lets users escape stale or unwanted learned entries.
+            Keysym::SPACE if shift_active => self.start_conversion(true),
+            Keysym::SPACE => self.start_conversion(false),
+            // Tab/Down: select from auto-suggest candidates (no re-inference)
             Keysym::DOWN | Keysym::TAB => self.select_auto_suggest(),
             // Shift+Arrow: extend/shrink selection (must be before plain Arrow)
             Keysym::LEFT if shift_active => self.shift_select_left(),
@@ -287,30 +306,49 @@ impl InputMethodEngine {
         }
     }
 
+    /// Begin a new emoji-shortcode composing session.
+    ///
+    /// Resets any leftover state, switches `input_mode` to
+    /// [`InputMode::Emoji`], seeds the buffer with `:`, and refreshes
+    /// the candidate list so the user sees emoji suggestions appear
+    /// the moment they press `:`.
+    pub(super) fn start_emoji_mode(&mut self) -> EngineResult {
+        self.converters.romaji.reset();
+        self.input_buf.clear();
+        self.live.text.clear();
+        self.input_mode = InputMode::Emoji;
+        self.input_buf.insert(":");
+        self.refresh_input_state()
+    }
+
+    /// First emoji candidate the rewriter would surface for `reading`,
+    /// or `None` if none match. Used by Enter in emoji mode so committing
+    /// `:smile` produces 😄 directly rather than the literal `:smile`.
+    fn first_emoji_candidate(&self, reading: &str) -> Option<String> {
+        self.converters
+            .rewriters
+            .rewrite_all(&[reading.to_string()])
+            .into_iter()
+            .map(|(text, _desc)| text)
+            .next()
+    }
+
     /// Input a character during composing.
     /// In alphabet mode, inserts directly; otherwise goes through romaji conversion.
     pub(super) fn input_char(&mut self, ch: char) -> EngineResult {
-        if self.input_mode == InputMode::Alphabet {
+        if matches!(self.input_mode, InputMode::Alphabet | InputMode::Emoji) {
             self.input_buf.insert(&ch.to_string());
             return self.refresh_input_state();
         }
 
         let prev_output_len = self.converters.romaji.output().chars().count();
-        let event = self.converters.romaji.push(ch);
+        let _event = self.converters.romaji.push(ch);
         let curr_output_len = self.converters.romaji.output().chars().count();
-        let romaji_buffer = self.converters.romaji.buffer().to_string();
-
-        // Track whether composed_hiragana was empty before processing.
-        // Used to decide if PassThrough chars should auto-commit (standalone punctuation)
-        // or stay in preedit (punctuation after hiragana).
-        let composed_was_empty = self.input_buf.text.is_empty();
 
         // Consume ALL new converter output into composed_hiragana at cursor position.
-        // This must happen BEFORE PassThrough handling because the converter may
-        // recursively pass through multiple chars (e.g., "thx" → output="th", buffer="x",
-        // event=PassThrough('h')), and we need to capture all of them via delta detection.
-        // PassThrough chars are already included in the converter output, so we must NOT
-        // also insert them separately.
+        // The converter may recursively pass through multiple chars (e.g., "thx" →
+        // output="th", buffer="x"), so capture all of them via delta detection.
+        // PassThrough chars are already included in the converter output.
         if curr_output_len > prev_output_len {
             let new_chars: String = self
                 .converters
@@ -322,23 +360,9 @@ impl InputMethodEngine {
             self.input_buf.insert(&new_chars);
         }
 
-        // Handle pass-through: only auto-commit when there was no previous hiragana
-        // (standalone punctuation). If hiragana was already in the preedit, keep the
-        // passthrough chars in composed_hiragana (already inserted by delta detection).
-        // Exception: digits always stay in preedit to allow "20世紀" style input.
-        if let ConversionEvent::PassThrough(c) = event
-            && !c.is_ascii_digit()
-            && composed_was_empty
-            && romaji_buffer.is_empty()
-        {
-            let text = self.input_buf.text.clone();
-            self.input_buf.clear();
-            self.state = InputState::Empty;
-            return EngineResult::consumed()
-                .with_action(EngineAction::UpdatePreedit(Preedit::new()))
-                .with_action(EngineAction::HideAuxText)
-                .with_action(EngineAction::Commit(text));
-        }
+        // PassThrough chars no longer auto-commit. They accumulate in the preedit
+        // alongside hiragana, allowing users to compose `「」`, type `'word'`,
+        // and access symbol variants from the candidate list.
 
         if let Some(result) = self.try_reset_if_empty() {
             return result;
@@ -354,9 +378,16 @@ impl InputMethodEngine {
         self.flush_romaji_to_composed();
 
         let reading = self.input_buf.text.clone();
-        let text = if self.input_mode == InputMode::Katakana {
+        let text = if self.input_mode == InputMode::Emoji {
+            // Emoji mode: Enter should select the first emoji candidate the
+            // EmojiRewriter would surface, not commit the literal `:smile`.
+            // Falls back to the literal buffer when nothing matches (e.g.
+            // `:xyz`) so the user still sees what they typed.
+            self.first_emoji_candidate(&reading)
+                .unwrap_or_else(|| reading.clone())
+        } else if self.input_mode == InputMode::Katakana {
             // Katakana mode always commits katakana, ignoring live conversion
-            Self::hiragana_to_katakana(&reading)
+            karukan_engine::hiragana_to_katakana(&reading)
         } else if !self.live.text.is_empty() {
             // Live conversion active: commit converted text
             self.live.text.clone()
@@ -371,10 +402,20 @@ impl InputMethodEngine {
 
         // Record learning: use original hiragana reading if this commit follows
         // partial conversion baking, so that the full reading → final result is learned.
-        let learning_reading = self.original_composing_text.take().unwrap_or(reading);
-        self.record_learning(&learning_reading, &text);
+        // Skip the learning record for emoji mode — the buffer holds a Slack-style
+        // query like `:smile`, not a hiragana reading.
+        if self.input_mode != InputMode::Emoji {
+            let learning_reading = self.original_composing_text.take().unwrap_or(reading);
+            self.record_learning(&learning_reading, &text);
+        } else {
+            self.original_composing_text = None;
+        }
 
+        let was_emoji = self.input_mode == InputMode::Emoji;
         self.enter_empty_state();
+        if was_emoji {
+            self.input_mode = InputMode::Hiragana;
+        }
 
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(Preedit::new()))
@@ -396,11 +437,28 @@ impl InputMethodEngine {
                 .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()));
         }
 
-        self.enter_empty_state();
+        // Emoji mode: Escape closes the picker but commits the literal
+        // buffer (the typed `:smile` or `:xyz`) — Slack-style escape.
+        let emoji_literal =
+            if self.input_mode == InputMode::Emoji && !self.input_buf.text.is_empty() {
+                Some(self.input_buf.text.clone())
+            } else {
+                None
+            };
 
-        EngineResult::consumed()
+        let was_emoji = self.input_mode == InputMode::Emoji;
+        self.enter_empty_state();
+        if was_emoji {
+            self.input_mode = InputMode::Hiragana;
+        }
+
+        let mut result = EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(Preedit::new()))
             .with_action(EngineAction::HideCandidates)
-            .with_action(EngineAction::HideAuxText)
+            .with_action(EngineAction::HideAuxText);
+        if let Some(literal) = emoji_literal {
+            result = result.with_action(EngineAction::Commit(literal));
+        }
+        result
     }
 }

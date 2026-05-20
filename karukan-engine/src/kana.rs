@@ -18,6 +18,22 @@ pub fn normalize_nfkc(text: &str) -> String {
     text.nfkc().collect()
 }
 
+/// True if the text contains any hiragana or katakana **letter**.
+///
+/// Used to distinguish "real" reading inputs (kana the model can convert)
+/// from symbol-only or alphabet-only inputs that would only produce
+/// hallucinated model output.
+///
+/// Only actual kana letters count — punctuation that lives in the katakana
+/// block (U+30A0 double hyphen, U+30FB middle dot `・`, U+30FC prolonged
+/// mark `ー`, iteration marks U+30FD–U+30FE) is intentionally excluded.
+/// Otherwise typing just `・` or `ー` would let the model run on a
+/// punctuation-only reading and hallucinate.
+pub fn contains_kana(text: &str) -> bool {
+    text.chars()
+        .any(|c| matches!(c, '\u{3041}'..='\u{3096}' | '\u{30A1}'..='\u{30FA}'))
+}
+
 /// Convert hiragana to katakana
 pub fn hiragana_to_katakana(text: &str) -> String {
     text.chars()
@@ -27,151 +43,6 @@ pub fn hiragana_to_katakana(text: &str) -> String {
             _ => c,
         })
         .collect()
-}
-
-/// Convert hiragana to half-width katakana
-pub fn hiragana_to_halfwidth_katakana(text: &str) -> String {
-    // First convert to full-width katakana, then to half-width
-    let katakana = hiragana_to_katakana(text);
-    katakana_to_halfwidth(&katakana)
-}
-
-/// Convert full-width katakana to half-width katakana
-fn katakana_to_halfwidth(text: &str) -> String {
-    let mut result = String::new();
-    for c in text.chars() {
-        match c {
-            'ァ' => result.push_str("\u{FF67}"),
-            'ィ' => result.push_str("\u{FF68}"),
-            'ゥ' => result.push_str("\u{FF69}"),
-            'ェ' => result.push_str("\u{FF6A}"),
-            'ォ' => result.push_str("\u{FF6B}"),
-            'ッ' => result.push_str("\u{FF6F}"),
-            'ャ' => result.push_str("\u{FF6C}"),
-            'ュ' => result.push_str("\u{FF6D}"),
-            'ョ' => result.push_str("\u{FF6E}"),
-            'ア' => result.push_str("\u{FF71}"),
-            'イ' => result.push_str("\u{FF72}"),
-            'ウ' => result.push_str("\u{FF73}"),
-            'エ' => result.push_str("\u{FF74}"),
-            'オ' => result.push_str("\u{FF75}"),
-            'カ' => result.push_str("\u{FF76}"),
-            'キ' => result.push_str("\u{FF77}"),
-            'ク' => result.push_str("\u{FF78}"),
-            'ケ' => result.push_str("\u{FF79}"),
-            'コ' => result.push_str("\u{FF7A}"),
-            'サ' => result.push_str("\u{FF7B}"),
-            'シ' => result.push_str("\u{FF7C}"),
-            'ス' => result.push_str("\u{FF7D}"),
-            'セ' => result.push_str("\u{FF7E}"),
-            'ソ' => result.push_str("\u{FF7F}"),
-            'タ' => result.push_str("\u{FF80}"),
-            'チ' => result.push_str("\u{FF81}"),
-            'ツ' => result.push_str("\u{FF82}"),
-            'テ' => result.push_str("\u{FF83}"),
-            'ト' => result.push_str("\u{FF84}"),
-            'ナ' => result.push_str("\u{FF85}"),
-            'ニ' => result.push_str("\u{FF86}"),
-            'ヌ' => result.push_str("\u{FF87}"),
-            'ネ' => result.push_str("\u{FF88}"),
-            'ノ' => result.push_str("\u{FF89}"),
-            'ハ' => result.push_str("\u{FF8A}"),
-            'ヒ' => result.push_str("\u{FF8B}"),
-            'フ' => result.push_str("\u{FF8C}"),
-            'ヘ' => result.push_str("\u{FF8D}"),
-            'ホ' => result.push_str("\u{FF8E}"),
-            'マ' => result.push_str("\u{FF8F}"),
-            'ミ' => result.push_str("\u{FF90}"),
-            'ム' => result.push_str("\u{FF91}"),
-            'メ' => result.push_str("\u{FF92}"),
-            'モ' => result.push_str("\u{FF93}"),
-            'ヤ' => result.push_str("\u{FF94}"),
-            'ユ' => result.push_str("\u{FF95}"),
-            'ヨ' => result.push_str("\u{FF96}"),
-            'ラ' => result.push_str("\u{FF97}"),
-            'リ' => result.push_str("\u{FF98}"),
-            'ル' => result.push_str("\u{FF99}"),
-            'レ' => result.push_str("\u{FF9A}"),
-            'ロ' => result.push_str("\u{FF9B}"),
-            'ワ' => result.push_str("\u{FF9C}"),
-            'ヲ' => result.push_str("\u{FF66}"),
-            'ン' => result.push_str("\u{FF9D}"),
-            'ー' => result.push_str("\u{FF70}"),
-            '。' => result.push_str("\u{FF61}"),
-            '、' => result.push_str("\u{FF64}"),
-            '・' => result.push_str("\u{FF65}"),
-            // Dakuten (voiced) variants: base + combining dakuten
-            'ガ' => result.push_str("\u{FF76}\u{FF9E}"),
-            'ギ' => result.push_str("\u{FF77}\u{FF9E}"),
-            'グ' => result.push_str("\u{FF78}\u{FF9E}"),
-            'ゲ' => result.push_str("\u{FF79}\u{FF9E}"),
-            'ゴ' => result.push_str("\u{FF7A}\u{FF9E}"),
-            'ザ' => result.push_str("\u{FF7B}\u{FF9E}"),
-            'ジ' => result.push_str("\u{FF7C}\u{FF9E}"),
-            'ズ' => result.push_str("\u{FF7D}\u{FF9E}"),
-            'ゼ' => result.push_str("\u{FF7E}\u{FF9E}"),
-            'ゾ' => result.push_str("\u{FF7F}\u{FF9E}"),
-            'ダ' => result.push_str("\u{FF80}\u{FF9E}"),
-            'ヂ' => result.push_str("\u{FF81}\u{FF9E}"),
-            'ヅ' => result.push_str("\u{FF82}\u{FF9E}"),
-            'デ' => result.push_str("\u{FF83}\u{FF9E}"),
-            'ド' => result.push_str("\u{FF84}\u{FF9E}"),
-            'バ' => result.push_str("\u{FF8A}\u{FF9E}"),
-            'ビ' => result.push_str("\u{FF8B}\u{FF9E}"),
-            'ブ' => result.push_str("\u{FF8C}\u{FF9E}"),
-            'ベ' => result.push_str("\u{FF8D}\u{FF9E}"),
-            'ボ' => result.push_str("\u{FF8E}\u{FF9E}"),
-            'ヴ' => result.push_str("\u{FF73}\u{FF9E}"),
-            // Handakuten (p-row)
-            'パ' => result.push_str("\u{FF8A}\u{FF9F}"),
-            'ピ' => result.push_str("\u{FF8B}\u{FF9F}"),
-            'プ' => result.push_str("\u{FF8C}\u{FF9F}"),
-            'ペ' => result.push_str("\u{FF8D}\u{FF9F}"),
-            'ポ' => result.push_str("\u{FF8E}\u{FF9F}"),
-            _ => result.push(c),
-        }
-    }
-    result
-}
-
-/// Convert half-width ASCII to full-width ASCII
-pub fn ascii_to_fullwidth(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            // ASCII printable range 0x21-0x7E → full-width 0xFF01-0xFF5E
-            '!'..='~' => std::char::from_u32(c as u32 - 0x21 + 0xFF01).unwrap_or(c),
-            // Space → full-width space
-            ' ' => '\u{3000}',
-            _ => c,
-        })
-        .collect()
-}
-
-/// Convert ASCII digits in text to kanji numerals (一桁ずつ置換).
-///
-/// Only digits are converted; non-digit characters pass through unchanged.
-/// Example: "312" → "三一二", "20世紀" → "二〇世紀"
-pub fn digits_to_kanji(text: &str) -> Option<String> {
-    if !text.chars().any(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(
-        text.chars()
-            .map(|c| match c {
-                '0' => '〇',
-                '1' => '一',
-                '2' => '二',
-                '3' => '三',
-                '4' => '四',
-                '5' => '五',
-                '6' => '六',
-                '7' => '七',
-                '8' => '八',
-                '9' => '九',
-                _ => c,
-            })
-            .collect(),
-    )
 }
 
 /// Convert katakana to hiragana
@@ -185,9 +56,229 @@ pub fn katakana_to_hiragana(text: &str) -> String {
         .collect()
 }
 
+/// Map a single full-width katakana char to its half-width form.
+///
+/// Voiced/semi-voiced characters expand to two chars (base + dakuten/handakuten).
+/// Returns the original char as a single-char string for non-katakana input.
+fn katakana_char_to_half(c: char) -> String {
+    match c {
+        // Sokuon, small kana
+        'ァ' => "ｧ".into(),
+        'ィ' => "ｨ".into(),
+        'ゥ' => "ｩ".into(),
+        'ェ' => "ｪ".into(),
+        'ォ' => "ｫ".into(),
+        'ッ' => "ｯ".into(),
+        'ャ' => "ｬ".into(),
+        'ュ' => "ｭ".into(),
+        'ョ' => "ｮ".into(),
+        // a-row through wo
+        'ア' => "ｱ".into(),
+        'イ' => "ｲ".into(),
+        'ウ' => "ｳ".into(),
+        'エ' => "ｴ".into(),
+        'オ' => "ｵ".into(),
+        'カ' => "ｶ".into(),
+        'キ' => "ｷ".into(),
+        'ク' => "ｸ".into(),
+        'ケ' => "ｹ".into(),
+        'コ' => "ｺ".into(),
+        'サ' => "ｻ".into(),
+        'シ' => "ｼ".into(),
+        'ス' => "ｽ".into(),
+        'セ' => "ｾ".into(),
+        'ソ' => "ｿ".into(),
+        'タ' => "ﾀ".into(),
+        'チ' => "ﾁ".into(),
+        'ツ' => "ﾂ".into(),
+        'テ' => "ﾃ".into(),
+        'ト' => "ﾄ".into(),
+        'ナ' => "ﾅ".into(),
+        'ニ' => "ﾆ".into(),
+        'ヌ' => "ﾇ".into(),
+        'ネ' => "ﾈ".into(),
+        'ノ' => "ﾉ".into(),
+        'ハ' => "ﾊ".into(),
+        'ヒ' => "ﾋ".into(),
+        'フ' => "ﾌ".into(),
+        'ヘ' => "ﾍ".into(),
+        'ホ' => "ﾎ".into(),
+        'マ' => "ﾏ".into(),
+        'ミ' => "ﾐ".into(),
+        'ム' => "ﾑ".into(),
+        'メ' => "ﾒ".into(),
+        'モ' => "ﾓ".into(),
+        'ヤ' => "ﾔ".into(),
+        'ユ' => "ﾕ".into(),
+        'ヨ' => "ﾖ".into(),
+        'ラ' => "ﾗ".into(),
+        'リ' => "ﾘ".into(),
+        'ル' => "ﾙ".into(),
+        'レ' => "ﾚ".into(),
+        'ロ' => "ﾛ".into(),
+        'ワ' => "ﾜ".into(),
+        'ヲ' => "ｦ".into(),
+        'ン' => "ﾝ".into(),
+        // Voiced (dakuten) — expand to base + ﾞ
+        'ガ' => "ｶﾞ".into(),
+        'ギ' => "ｷﾞ".into(),
+        'グ' => "ｸﾞ".into(),
+        'ゲ' => "ｹﾞ".into(),
+        'ゴ' => "ｺﾞ".into(),
+        'ザ' => "ｻﾞ".into(),
+        'ジ' => "ｼﾞ".into(),
+        'ズ' => "ｽﾞ".into(),
+        'ゼ' => "ｾﾞ".into(),
+        'ゾ' => "ｿﾞ".into(),
+        'ダ' => "ﾀﾞ".into(),
+        'ヂ' => "ﾁﾞ".into(),
+        'ヅ' => "ﾂﾞ".into(),
+        'デ' => "ﾃﾞ".into(),
+        'ド' => "ﾄﾞ".into(),
+        'バ' => "ﾊﾞ".into(),
+        'ビ' => "ﾋﾞ".into(),
+        'ブ' => "ﾌﾞ".into(),
+        'ベ' => "ﾍﾞ".into(),
+        'ボ' => "ﾎﾞ".into(),
+        'ヴ' => "ｳﾞ".into(),
+        // Semi-voiced (handakuten) — expand to base + ﾟ
+        'パ' => "ﾊﾟ".into(),
+        'ピ' => "ﾋﾟ".into(),
+        'プ' => "ﾌﾟ".into(),
+        'ペ' => "ﾍﾟ".into(),
+        'ポ' => "ﾎﾟ".into(),
+        // Long sound, punctuation
+        'ー' => "ｰ".into(),
+        '・' => "･".into(),
+        '。' => "｡".into(),
+        '、' => "､".into(),
+        '「' => "｢".into(),
+        '」' => "｣".into(),
+        // Standalone dakuten / handakuten
+        '゛' => "ﾞ".into(),
+        '゜' => "ﾟ".into(),
+        _ => c.to_string(),
+    }
+}
+
+/// True if every character is a hiragana letter (U+3041–U+3096).
+///
+/// Used to decide whether a candidate deserves the mozc-style `[全]ひらがな`
+/// width-form annotation. Empty strings return false.
+pub fn is_pure_hiragana(text: &str) -> bool {
+    !text.is_empty() && text.chars().all(|c| matches!(c, '\u{3041}'..='\u{3096}'))
+}
+
+/// True if every character is a full-width katakana letter (U+30A1–U+30FA,
+/// plus the prolonged sound mark U+30FC).
+///
+/// Used to decide whether a candidate deserves the mozc-style `[全]カタカナ`
+/// width-form annotation. Empty strings return false.
+pub fn is_pure_full_katakana(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| matches!(c, '\u{30A1}'..='\u{30FA}' | '\u{30FC}'))
+}
+
+/// Convert full-width katakana to half-width katakana.
+///
+/// Voiced characters expand into two half-width characters (base + ﾞ/ﾟ).
+/// Non-katakana characters pass through unchanged.
+pub fn katakana_to_half_width(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        out.push_str(&katakana_char_to_half(c));
+    }
+    out
+}
+
+/// Convert hiragana to half-width katakana.
+///
+/// Equivalent to `katakana_to_half_width(hiragana_to_katakana(text))`.
+pub fn hiragana_to_half_katakana(text: &str) -> String {
+    katakana_to_half_width(&hiragana_to_katakana(text))
+}
+
+/// Map a half-width ASCII alphanumeric character (digit / Latin letter) to
+/// its full-width form (e.g. `a` → `ａ`, `Z` → `Ｚ`, `5` → `５`). All other
+/// characters pass through unchanged.
+pub fn ascii_to_fullwidth_char(c: char) -> char {
+    match c {
+        '0'..='9' => char::from_u32(c as u32 - 0x30 + 0xFF10).unwrap_or(c),
+        'A'..='Z' => char::from_u32(c as u32 - 0x41 + 0xFF21).unwrap_or(c),
+        'a'..='z' => char::from_u32(c as u32 - 0x61 + 0xFF41).unwrap_or(c),
+        _ => c,
+    }
+}
+
+/// Map a full-width ASCII alphanumeric character to its half-width form
+/// (e.g. `ａ` → `a`, `Ｚ` → `Z`, `５` → `5`). All other characters pass
+/// through unchanged.
+pub fn fullwidth_to_ascii_char(c: char) -> char {
+    match c {
+        '\u{FF10}'..='\u{FF19}' => char::from_u32(c as u32 - 0xFF10 + 0x30).unwrap_or(c),
+        '\u{FF21}'..='\u{FF3A}' => char::from_u32(c as u32 - 0xFF21 + 0x41).unwrap_or(c),
+        '\u{FF41}'..='\u{FF5A}' => char::from_u32(c as u32 - 0xFF41 + 0x61).unwrap_or(c),
+        _ => c,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_contains_kana() {
+        // Real kana letters → true
+        assert!(contains_kana("あ"));
+        assert!(contains_kana("ア"));
+        assert!(contains_kana("ヴ")); // U+30F4 in U+30A1..=U+30FA
+        assert!(contains_kana("コーヒー"));
+        assert!(contains_kana("カ・ド")); // mixed kana + middle dot still has kana
+
+        // Punctuation in the katakana block — NOT kana.
+        // Without this exclusion, typing just `・` or `ー` would let the
+        // model run on a punctuation-only reading and hallucinate.
+        assert!(!contains_kana("・"));
+        assert!(!contains_kana("ー"));
+        assert!(!contains_kana("ヽ"));
+        assert!(!contains_kana("ヾ"));
+
+        // Other non-kana inputs.
+        assert!(!contains_kana(""));
+        assert!(!contains_kana("123"));
+        assert!(!contains_kana("「」"));
+        assert!(!contains_kana("漢字")); // kanji, not kana
+        assert!(!contains_kana("abc"));
+    }
+
+    #[test]
+    fn test_is_pure_hiragana() {
+        assert!(is_pure_hiragana("あ"));
+        assert!(is_pure_hiragana("あいうえお"));
+        assert!(is_pure_hiragana("がっこう"));
+
+        assert!(!is_pure_hiragana(""));
+        assert!(!is_pure_hiragana("ア")); // katakana
+        assert!(!is_pure_hiragana("あア")); // mixed
+        assert!(!is_pure_hiragana("あ漢"));
+        assert!(!is_pure_hiragana("ーあ")); // prolonged mark is katakana block
+    }
+
+    #[test]
+    fn test_is_pure_full_katakana() {
+        assert!(is_pure_full_katakana("ア"));
+        assert!(is_pure_full_katakana("アイウエオ"));
+        assert!(is_pure_full_katakana("コーヒー")); // includes prolonged mark
+        assert!(is_pure_full_katakana("ヴ"));
+
+        assert!(!is_pure_full_katakana(""));
+        assert!(!is_pure_full_katakana("あ")); // hiragana
+        assert!(!is_pure_full_katakana("ｱ")); // half-width
+        assert!(!is_pure_full_katakana("ア漢"));
+        assert!(!is_pure_full_katakana("・")); // middle dot not a kana letter
+    }
 
     #[test]
     fn test_hiragana_to_katakana() {
@@ -218,13 +309,61 @@ mod tests {
     }
 
     #[test]
-    fn test_digits_to_kanji() {
-        assert_eq!(digits_to_kanji("312"), Some("三一二".to_string()));
-        assert_eq!(digits_to_kanji("2"), Some("二".to_string()));
-        assert_eq!(digits_to_kanji("0"), Some("〇".to_string()));
-        assert_eq!(digits_to_kanji("20世紀"), Some("二〇世紀".to_string()));
-        assert_eq!(digits_to_kanji("あいう"), None);
-        assert_eq!(digits_to_kanji(""), None);
+    fn test_katakana_to_half_width() {
+        assert_eq!(katakana_to_half_width("アイウエオ"), "ｱｲｳｴｵ");
+        assert_eq!(katakana_to_half_width("カキクケコ"), "ｶｷｸｹｺ");
+        assert_eq!(katakana_to_half_width("ガッコウ"), "ｶﾞｯｺｳ");
+        assert_eq!(katakana_to_half_width("パピプペポ"), "ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ");
+        assert_eq!(katakana_to_half_width("キャキュキョ"), "ｷｬｷｭｷｮ");
+        assert_eq!(katakana_to_half_width("コーヒー"), "ｺｰﾋｰ");
+        assert_eq!(katakana_to_half_width("ヴ"), "ｳﾞ");
+        // Punctuation
+        assert_eq!(katakana_to_half_width("「アイウ」"), "｢ｱｲｳ｣");
+        // Pass through non-katakana
+        assert_eq!(katakana_to_half_width("abc"), "abc");
+        assert_eq!(katakana_to_half_width("漢字"), "漢字");
+    }
+
+    #[test]
+    fn test_hiragana_to_half_katakana() {
+        assert_eq!(hiragana_to_half_katakana("あ"), "ｱ");
+        assert_eq!(hiragana_to_half_katakana("がっこう"), "ｶﾞｯｺｳ");
+        assert_eq!(hiragana_to_half_katakana("ぱぴぷぺぽ"), "ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ");
+    }
+
+    #[test]
+    fn test_ascii_to_fullwidth_char() {
+        // Digits
+        assert_eq!(ascii_to_fullwidth_char('0'), '０');
+        assert_eq!(ascii_to_fullwidth_char('9'), '９');
+        // Uppercase letters
+        assert_eq!(ascii_to_fullwidth_char('A'), 'Ａ');
+        assert_eq!(ascii_to_fullwidth_char('Z'), 'Ｚ');
+        // Lowercase letters
+        assert_eq!(ascii_to_fullwidth_char('a'), 'ａ');
+        assert_eq!(ascii_to_fullwidth_char('z'), 'ｚ');
+        // Pass-through for non-ASCII-alphanumerics
+        assert_eq!(ascii_to_fullwidth_char(' '), ' ');
+        assert_eq!(ascii_to_fullwidth_char('!'), '!');
+        assert_eq!(ascii_to_fullwidth_char('あ'), 'あ');
+        assert_eq!(ascii_to_fullwidth_char('Ａ'), 'Ａ');
+    }
+
+    #[test]
+    fn test_fullwidth_to_ascii_char() {
+        // Digits
+        assert_eq!(fullwidth_to_ascii_char('０'), '0');
+        assert_eq!(fullwidth_to_ascii_char('９'), '9');
+        // Uppercase letters
+        assert_eq!(fullwidth_to_ascii_char('Ａ'), 'A');
+        assert_eq!(fullwidth_to_ascii_char('Ｚ'), 'Z');
+        // Lowercase letters
+        assert_eq!(fullwidth_to_ascii_char('ａ'), 'a');
+        assert_eq!(fullwidth_to_ascii_char('ｚ'), 'z');
+        // Pass-through
+        assert_eq!(fullwidth_to_ascii_char('a'), 'a');
+        assert_eq!(fullwidth_to_ascii_char('あ'), 'あ');
+        assert_eq!(fullwidth_to_ascii_char('！'), '！'); // not part of ASCII alphanumerics
     }
 
     #[test]

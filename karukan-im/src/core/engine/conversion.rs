@@ -10,7 +10,24 @@ use super::*;
 /// Maximum number of learning candidates to show
 const MAX_LEARNING_CANDIDATES: usize = 3;
 
+/// Mozc-style width/script annotation for a pure-kana candidate, or `None`
+/// if the text mixes scripts or contains kanji/punctuation. Used to label
+/// `あ` / `ア` / `ｱ` candidates in the conversion list.
+fn width_annotation(text: &str) -> Option<&'static str> {
+    if karukan_engine::is_pure_hiragana(text) {
+        Some("[全]ひらがな")
+    } else if karukan_engine::is_pure_full_katakana(text) {
+        Some("[全]カタカナ")
+    } else {
+        None
+    }
+}
+
 /// Helper for building a deduplicated list of conversion candidates.
+///
+/// Two push paths exist: [`push`] dedups by text (skips duplicates), and
+/// [`push_force`] always inserts (used for learning candidates that should
+/// appear at the top even if a later source re-emits the same text).
 struct CandidateBuilder {
     candidates: Vec<AnnotatedCandidate>,
     seen: HashSet<String>,
@@ -25,21 +42,18 @@ impl CandidateBuilder {
     }
 
     /// Push a candidate if its text hasn't been seen yet.
-    fn push_if_new(&mut self, text: String, source: CandidateSource, reading: Option<String>) {
-        if self.seen.insert(text.clone()) {
-            self.candidates.push(AnnotatedCandidate {
-                text,
-                source,
-                reading,
-            });
-        }
-    }
-
-    /// Push a pre-built `AnnotatedCandidate` if its text hasn't been seen yet.
-    fn push_annotated_if_new(&mut self, ac: AnnotatedCandidate) {
+    fn push(&mut self, ac: AnnotatedCandidate) {
         if self.seen.insert(ac.text.clone()) {
             self.candidates.push(ac);
         }
+    }
+
+    /// Push a candidate unconditionally, marking its text as seen so later
+    /// dedup'd inserts skip it. Use only for sources that should win over
+    /// duplicates from later steps (e.g. learning cache).
+    fn push_force(&mut self, ac: AnnotatedCandidate) {
+        self.seen.insert(ac.text.clone());
+        self.candidates.push(ac);
     }
 
     fn is_empty(&self) -> bool {
@@ -56,11 +70,19 @@ impl InputMethodEngine {
     ///
     /// Determines the conversion strategy (main model, light model, or parallel beam),
     /// dispatches to the appropriate model(s), measures latency, and records which model was used.
+    ///
+    /// Skips the model entirely when the reading has no hiragana/katakana — the
+    /// model is trained on kana → kanji and hallucinates garbage (e.g. `「` → `w`)
+    /// for symbol- or alphabet-only inputs. Rule-based variants from
+    /// `SymbolRewriter` cover those cases instead.
     fn run_kana_kanji_conversion(&mut self, reading: &str, num_candidates: usize) -> Vec<String> {
+        if !karukan_engine::contains_kana(reading) {
+            return vec![];
+        }
         let Some(converter) = self.converters.kanji.as_ref() else {
             return vec![];
         };
-        let katakana = karukan_engine::kana::hiragana_to_katakana(reading);
+        let katakana = karukan_engine::hiragana_to_katakana(reading);
         let api_context = self.truncate_context_for_api();
         let main_model_name = converter.model_display_name().to_string();
 
@@ -168,7 +190,7 @@ impl InputMethodEngine {
     pub(super) fn select_auto_suggest(&mut self) -> EngineResult {
         let candidates = match self.suggest_candidates.take() {
             Some(c) if !c.is_empty() => c,
-            _ => return self.start_conversion(),
+            _ => return self.start_conversion(false),
         };
 
         // Flush any remaining romaji
@@ -212,8 +234,16 @@ impl InputMethodEngine {
             ))
     }
 
-    /// Start kanji conversion
-    pub(super) fn start_conversion(&mut self) -> EngineResult {
+    /// Start kanji conversion for the current input buffer.
+    ///
+    /// Called when DOWN/SPACE/Shift+SPACE is pressed: flushes any pending romaji,
+    /// resolves the reading, runs `build_conversion_candidates`, and transitions
+    /// into the Conversion state. Supports selection-based partial conversion
+    /// (Shift+Arrow then Space converts only the selected range).
+    ///
+    /// `skip_learning` is set by the Shift+Space path to omit learning-cache
+    /// candidates (Space/Down keep the default learning-included behavior).
+    pub(super) fn start_conversion(&mut self, skip_learning: bool) -> EngineResult {
         self.suggest_candidates = None;
         // Flush any remaining romaji into composed_hiragana
         self.flush_romaji_to_composed();
@@ -250,7 +280,8 @@ impl InputMethodEngine {
         }
 
         // Get candidates from kanji converter (use full num_candidates for explicit conversion)
-        let mut candidates = self.build_conversion_candidates(&reading, self.config.num_candidates);
+        let mut candidates =
+            self.build_conversion_candidates(&reading, self.config.num_candidates, skip_learning);
 
         // If the previous auto-suggest result is not in the new candidates, insert it at the top
         // so it doesn't disappear when the conversion strategy changes.
@@ -261,11 +292,7 @@ impl InputMethodEngine {
         {
             candidates.insert(
                 0,
-                AnnotatedCandidate {
-                    text: prev_suggest_text,
-                    source: CandidateSource::Model,
-                    reading: None,
-                },
+                AnnotatedCandidate::new(prev_suggest_text, CandidateSource::Model),
             );
         }
 
@@ -279,26 +306,24 @@ impl InputMethodEngine {
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
 
-        // Create candidate list with reading and source annotation
+        // Map AnnotatedCandidate → public Candidate. The two annotation
+        // slots are kept disjoint so descriptions never duplicate between the
+        // aux text and the candidate's right-side comment:
+        //   - `source_label` ← source.label() only (e.g. `🤖 AI`, `📚 辞書`)
+        //   - `description`  ← the per-candidate description only
+        //                      (e.g. `三点リーダ`, `[全]英大文字`)
         let candidate_list = CandidateList::new(
             candidates
                 .into_iter()
-                .enumerate()
-                .map(|(i, ac)| {
-                    let label = ac.source.label();
+                .map(|ac| {
                     let cand_reading = ac.reading.unwrap_or_else(|| reading.clone());
-                    let mut c = if label.is_empty() {
-                        Candidate::with_reading(&ac.text, &cand_reading)
-                    } else {
-                        Candidate {
-                            text: ac.text,
-                            reading: Some(cand_reading),
-                            annotation: Some(label.to_string()),
-                            index: 0,
-                        }
-                    };
-                    c.index = i;
-                    c
+                    let label = ac.source.label();
+                    Candidate {
+                        text: ac.text,
+                        reading: Some(cand_reading),
+                        source_label: (!label.is_empty()).then(|| label.to_string()),
+                        description: ac.description,
+                    }
                 })
                 .collect(),
         );
@@ -392,11 +417,10 @@ impl InputMethodEngine {
                     break;
                 }
                 if seen.insert(cand.surface.clone()) {
-                    candidates.push(AnnotatedCandidate {
-                        text: cand.surface.clone(),
-                        source: CandidateSource::UserDictionary,
-                        reading: None,
-                    });
+                    candidates.push(AnnotatedCandidate::new(
+                        cand.surface.clone(),
+                        CandidateSource::UserDictionary,
+                    ));
                 }
             }
         }
@@ -412,11 +436,10 @@ impl InputMethodEngine {
                     break;
                 }
                 if seen.insert(cand.surface.clone()) {
-                    candidates.push(AnnotatedCandidate {
-                        text: cand.surface,
-                        source: CandidateSource::Dictionary,
-                        reading: None,
-                    });
+                    candidates.push(AnnotatedCandidate::new(
+                        cand.surface,
+                        CandidateSource::Dictionary,
+                    ));
                 }
             }
         }
@@ -431,119 +454,125 @@ impl InputMethodEngine {
     /// count for performance.
     ///
     /// Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
+    ///
+    /// `skip_learning` suppresses the learning-cache step (1). Used by the Tab
+    /// key path so users can escape a noisy learning history without losing
+    /// access to dictionary/model candidates.
     pub(super) fn build_conversion_candidates(
         &mut self,
         reading: &str,
         num_candidates: usize,
+        skip_learning: bool,
     ) -> Vec<AnnotatedCandidate> {
-        // Ensure kanji converter is initialized
+        // Try to initialize the kanji converter, but don't bail out if it
+        // fails — symbol-only inputs (e.g. `。。。`) don't need the model and
+        // we still want to produce dictionary, rewriter, and fallback candidates.
+        // run_kana_kanji_conversion handles the converter-missing case.
         if self.converters.kanji.is_none()
             && let Err(e) = self.init_kanji_converter()
         {
             debug!("Failed to initialize kanji converter: {}", e);
-            return vec![AnnotatedCandidate {
-                text: reading.to_string(),
-                source: CandidateSource::Fallback,
-                reading: None,
-            }];
         }
 
         let candidates = self.run_kana_kanji_conversion(reading, num_candidates);
 
         let hiragana = reading.to_string();
-        let katakana = Self::hiragana_to_katakana(reading);
+        let katakana = karukan_engine::hiragana_to_katakana(reading);
 
         // Priority: Learning → Model → System Dictionary → User Dictionary → Fallback
         let mut builder = CandidateBuilder::new();
 
-        // 1. Learning cache candidates (highest priority, exact match only)
-        //    Prefix (predictive) matches are excluded during explicit conversion
-        //    to avoid suggesting overly long candidates like "変換ウインドウ"
-        //    for a reading of "へんかん". Prefix matches are still used in auto-suggest.
-        for c in self.lookup_learning_exact(reading) {
-            // Force-insert learning candidates (always included even if duplicate text)
-            builder.seen.insert(c.text.clone());
-            builder.candidates.push(AnnotatedCandidate {
-                text: c.text,
-                source: CandidateSource::Learning,
+        // 1. Learning cache candidates (highest priority).
+        //    Force-inserted so they win against duplicate text from later sources.
+        //    Skipped when the caller asks for a learning-free conversion (Shift+Space).
+        if !skip_learning {
+            for c in self.lookup_learning_candidates(reading) {
                 // Exact matches have reading == input reading; use None to avoid redundancy
-                reading: c.reading.filter(|r| r != reading),
-            });
+                let cand_reading = c.reading.filter(|r| r != reading);
+                builder.push_force(
+                    AnnotatedCandidate::new(c.text, CandidateSource::Learning)
+                        .with_reading(cand_reading),
+                );
+            }
         }
 
-        // 2. Model inference results (filter out overly long candidates)
-        //    Kana-kanji conversion should produce output ≤ reading length in chars.
-        //    Longer output typically means the model appended extra words
-        //    (e.g. "へんかん" → "変換ウインドウ").
-        let reading_len = reading.chars().count();
+        // 2. Dictionary candidates (user dict first, then system dict)
+        let dict_results = self.search_dictionaries(reading, usize::MAX);
+        // Insert user dictionary entries at the top (after learning)
+        for ac in &dict_results {
+            if ac.source == CandidateSource::UserDictionary {
+                builder.push(ac.clone());
+            }
+        }
+
+        // 3. Model inference results
         if candidates.is_empty() {
-            if builder.is_empty() {
-                builder.push_if_new(hiragana.clone(), CandidateSource::Fallback, None);
+            // In emoji mode, defer the literal-fallback decision until
+            // after rewriters have run — otherwise `:smile` would be
+            // pinned to the top of the candidate list as a Fallback
+            // and outrank the 😄 we surface in step 5/6.
+            if builder.is_empty() && self.input_mode != InputMode::Emoji {
+                builder.push(AnnotatedCandidate::new(
+                    hiragana.clone(),
+                    CandidateSource::Fallback,
+                ));
             }
         } else {
             for text in candidates {
-                if text.chars().count() <= reading_len {
-                    builder.push_if_new(text, CandidateSource::Model, None);
-                }
+                builder.push(AnnotatedCandidate::new(text, CandidateSource::Model));
             }
         }
 
-        // 3. Dictionary candidates
-        let dict_results = self.search_dictionaries(reading, usize::MAX);
-
-        // 3a. System dictionary
-        for ac in &dict_results {
-            if ac.source == CandidateSource::Dictionary {
-                builder.push_annotated_if_new(ac.clone());
-            }
-        }
-
-        // 3b. User dictionary (kaomoji/emoji etc. — lowest priority among dictionaries)
+        // 4. System dictionary candidates (from search_dictionaries result)
         for ac in dict_results {
-            if ac.source == CandidateSource::UserDictionary {
-                builder.push_annotated_if_new(ac);
+            if ac.source == CandidateSource::Dictionary {
+                builder.push(ac);
             }
         }
 
-        // 4. Append hiragana/katakana fallback if not already present
-        builder.push_if_new(hiragana, CandidateSource::Fallback, None);
-        builder.push_if_new(katakana, CandidateSource::Fallback, None);
+        // 5/6. Hiragana/katakana fallback + rewriter variants.
+        let rewriter_variants = self
+            .converters
+            .rewriters
+            .rewrite_all(&[reading.to_string()]);
+        if self.input_mode == InputMode::Emoji {
+            for (variant, description) in rewriter_variants {
+                builder.push(
+                    AnnotatedCandidate::new(variant, CandidateSource::Rewriter)
+                        .with_description(description),
+                );
+            }
+        } else {
+            builder.push(AnnotatedCandidate::new(hiragana, CandidateSource::Fallback));
+            builder.push(AnnotatedCandidate::new(katakana, CandidateSource::Fallback));
+            for (variant, description) in rewriter_variants {
+                builder.push(
+                    AnnotatedCandidate::new(variant, CandidateSource::Rewriter)
+                        .with_description(description),
+                );
+            }
+        }
 
-        // 5. Kanji numeral fallback (e.g. "312" → "三一二")
-        if let Some(kanji_num) = karukan_engine::digits_to_kanji(reading) {
-            builder.push_if_new(kanji_num, CandidateSource::Fallback, None);
+        // 7. Enrich Fallback candidates with symbol descriptions.
+        for c in &mut builder.candidates {
+            if c.source == CandidateSource::Fallback
+                && c.description.is_none()
+                && let Some(desc) = karukan_engine::symbol_description(&c.text)
+            {
+                c.description = Some(desc.to_string());
+            }
+        }
+
+        // 8. Attach mozc-style width annotations to any pure-kana candidate.
+        for c in &mut builder.candidates {
+            if c.description.is_none()
+                && let Some(desc) = width_annotation(&c.text)
+            {
+                c.description = Some(desc.to_string());
+            }
         }
 
         builder.into_candidates()
-    }
-
-    /// Look up learning cache candidates for a reading (exact match only, max 3).
-    ///
-    /// Used during explicit conversion (Space key) to avoid overly long prefix-match
-    /// candidates. For auto-suggest display, use `lookup_learning_candidates` instead.
-    fn lookup_learning_exact(&self, reading: &str) -> Vec<Candidate> {
-        let Some(cache) = &self.learning else {
-            return vec![];
-        };
-        let mut candidates: Vec<Candidate> = Vec::new();
-        let mut seen = HashSet::new();
-        let label = CandidateSource::Learning.label().to_string();
-
-        for (surface, _score) in cache.lookup(reading) {
-            if candidates.len() >= MAX_LEARNING_CANDIDATES {
-                break;
-            }
-            if seen.insert(surface.clone()) {
-                candidates.push(Candidate {
-                    text: surface,
-                    reading: Some(reading.to_string()),
-                    annotation: Some(label.clone()),
-                    index: candidates.len(),
-                });
-            }
-        }
-
-        candidates
     }
 
     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
@@ -566,8 +595,8 @@ impl InputMethodEngine {
                 candidates.push(Candidate {
                     text: surface,
                     reading: Some(reading.to_string()),
-                    annotation: Some(label.clone()),
-                    index: candidates.len(),
+                    source_label: Some(label.clone()),
+                    description: None,
                 });
             }
         }
@@ -584,8 +613,8 @@ impl InputMethodEngine {
                 candidates.push(Candidate {
                     text: surface,
                     reading: Some(full_reading),
-                    annotation: Some(label.clone()),
-                    index: candidates.len(),
+                    source_label: Some(label.clone()),
+                    description: None,
                 });
             }
         }
@@ -599,12 +628,29 @@ impl InputMethodEngine {
     pub(super) fn lookup_dict_candidates(&self, reading: &str) -> Vec<Candidate> {
         self.search_dictionaries(reading, CandidateList::DEFAULT_PAGE_SIZE)
             .into_iter()
-            .enumerate()
-            .map(|(i, ac)| Candidate {
+            .map(|ac| Candidate {
                 text: ac.text,
                 reading: Some(reading.to_string()),
-                annotation: Some(ac.source.label().to_string()),
-                index: i,
+                source_label: Some(ac.source.label().to_string()),
+                description: None,
+            })
+            .collect()
+    }
+
+    /// Build rule-based rewriter variants for the reading itself (e.g. for
+    /// symbol input `「` → `『`, `【`, `（`, ...). Used in the auto-suggest path
+    /// so users see mozc-style symbol variants without pressing Space first.
+    pub(super) fn lookup_rewriter_variants(&self, reading: &str) -> Vec<Candidate> {
+        let source_label = CandidateSource::Rewriter.label().to_string();
+        self.converters
+            .rewriters
+            .rewrite_all(&[reading.to_string()])
+            .into_iter()
+            .map(|(text, description)| Candidate {
+                text,
+                reading: Some(reading.to_string()),
+                source_label: Some(source_label.clone()),
+                description,
             })
             .collect()
     }
@@ -707,7 +753,12 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
-        if let Some(reading) = &reading {
+        // Skip learning when the buffer is a `:shortcode` query — the
+        // reading would be e.g. `:smile`, which isn't a hiragana key
+        // and would corrupt the kana-keyed learning cache.
+        if self.input_mode != InputMode::Emoji
+            && let Some(reading) = &reading
+        {
             self.record_learning(reading, &text);
         }
 
@@ -721,6 +772,9 @@ impl InputMethodEngine {
         }
 
         self.enter_empty_state();
+        if self.input_mode == InputMode::Emoji {
+            self.input_mode = InputMode::Hiragana;
+        }
 
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(Preedit::new()))
@@ -735,7 +789,9 @@ impl InputMethodEngine {
             return EngineResult::not_consumed();
         };
 
-        if let Some(reading) = &reading {
+        if self.input_mode != InputMode::Emoji
+            && let Some(reading) = &reading
+        {
             self.record_learning(reading, &text);
         }
 
@@ -748,6 +804,9 @@ impl InputMethodEngine {
         };
 
         self.enter_empty_state();
+        if self.input_mode == InputMode::Emoji {
+            self.input_mode = InputMode::Hiragana;
+        }
 
         // Start new input with the character
         let new_input_result = self.start_input(ch);
@@ -943,7 +1002,7 @@ impl InputMethodEngine {
         if text.is_empty() {
             return EngineResult::not_consumed();
         }
-        let hw_katakana = karukan_engine::hiragana_to_halfwidth_katakana(&text);
+        let hw_katakana = karukan_engine::kana::hiragana_to_half_katakana(&text);
         self.commit_direct(hw_katakana)
     }
 
@@ -953,7 +1012,10 @@ impl InputMethodEngine {
         if raw.is_empty() {
             return EngineResult::not_consumed();
         }
-        let fullwidth = karukan_engine::ascii_to_fullwidth(&raw);
+        let fullwidth: String = raw
+            .chars()
+            .map(karukan_engine::kana::ascii_to_fullwidth_char)
+            .collect();
         self.commit_direct(fullwidth)
     }
 

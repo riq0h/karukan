@@ -23,12 +23,12 @@ impl InputMethodEngine {
 
         let katakana = self.input_mode == InputMode::Katakana;
         let display_before = if katakana {
-            Self::hiragana_to_katakana(&before)
+            karukan_engine::hiragana_to_katakana(&before)
         } else {
             before
         };
         let display_after = if katakana {
-            Self::hiragana_to_katakana(&after)
+            karukan_engine::hiragana_to_katakana(&after)
         } else {
             after
         };
@@ -124,6 +124,11 @@ impl InputMethodEngine {
             InputMode::Alphabet => "[A]",
             InputMode::Katakana => "[カ]",
             InputMode::Hiragana => "[あ]",
+            // ☺ (U+263A, Unicode 1.1 / 1993) — the oldest smiley-face
+            // codepoint in Unicode; gives emoji mode an unambiguous
+            // glyph in the aux text that's distinct from `[A]` so the
+            // user sees they're not in plain alphabet input.
+            InputMode::Emoji => "[☺]",
         };
         if self.live.enabled {
             format!("⚡{}", base)
@@ -191,7 +196,7 @@ impl InputMethodEngine {
             .unwrap_or_default();
         let source_label = candidates
             .and_then(|c| c.selected())
-            .and_then(|c| c.annotation.as_deref())
+            .and_then(|c| c.source_label.as_deref())
             .filter(|a| !a.is_empty())
             .map(|a| format!(" | {}", a))
             .unwrap_or_default();
@@ -234,11 +239,6 @@ impl InputMethodEngine {
                 indicator, display_reading, ctx, timing, model
             )
         }
-    }
-
-    /// Convert hiragana string to katakana
-    pub(super) fn hiragana_to_katakana(hiragana: &str) -> String {
-        karukan_engine::kana::hiragana_to_katakana(hiragana)
     }
 
     /// Truncate context to safe size for API calls

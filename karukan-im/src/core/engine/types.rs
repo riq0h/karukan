@@ -1,6 +1,6 @@
 //! Type definitions for the IME engine
 
-use karukan_engine::{Dictionary, KanaKanjiConverter, RomajiConverter};
+use karukan_engine::{Dictionary, KanaKanjiConverter, RewriterChain, RomajiConverter};
 
 use crate::config::settings::StrategyMode;
 
@@ -87,6 +87,8 @@ pub struct EngineConfig {
     pub candidate_window_threshold: u32,
     /// Show auxiliary text (inference time, dictionary source, etc.)
     pub show_aux_text: bool,
+    /// Whether live conversion is enabled at engine startup
+    pub live_conversion: bool,
 }
 
 impl Default for EngineConfig {
@@ -102,6 +104,7 @@ impl Default for EngineConfig {
             auto_suggest: true,
             candidate_window_threshold: 3,
             show_aux_text: true,
+            live_conversion: true,
         }
     }
 }
@@ -114,6 +117,8 @@ pub(in crate::core) struct Converters {
     pub kanji: Option<KanaKanjiConverter>,
     /// Light model for beam search
     pub light_kanji: Option<KanaKanjiConverter>,
+    /// Candidate rewriters (half-width katakana, symbol variants)
+    pub rewriters: RewriterChain,
 }
 
 /// Input mode for the IME engine
@@ -125,6 +130,14 @@ pub(crate) enum InputMode {
     Katakana,
     /// Alphabet (direct input) mode — characters bypass romaji conversion
     Alphabet,
+    /// Emoji shortcode mode — entered by typing `:` from Empty state.
+    /// Behaves like [`InputMode::Alphabet`] (ASCII inserted directly,
+    /// no romaji conversion) but auto-exits back to [`InputMode::Hiragana`]
+    /// on commit/cancel so the next word lands in kana mode without the
+    /// user having to toggle anything. The `EmojiRewriter` picks up the
+    /// `:`-prefixed input from the candidate-build pipeline and surfaces
+    /// emoji candidates as the user types.
+    Emoji,
 }
 
 /// Live conversion state: enabled flag and current converted text
@@ -134,6 +147,15 @@ pub(in crate::core) struct LiveConversion {
     pub enabled: bool,
     /// Converted text (non-empty when live conversion produced a result)
     pub text: String,
+}
+
+impl LiveConversion {
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            text: String::new(),
+        }
+    }
 }
 
 /// Dictionary store: system, user, and future cache dictionaries

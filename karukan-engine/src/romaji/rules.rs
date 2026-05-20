@@ -352,30 +352,6 @@ pub fn build_rules() -> TrieNode {
     // Brackets
     trie.insert("[", "「");
     trie.insert("]", "」");
-    trie.insert("(", "（");
-    trie.insert(")", "）");
-    trie.insert("{", "｛");
-    trie.insert("}", "｝");
-
-    // Additional full-width symbols
-    trie.insert("#", "＃");
-    trie.insert("$", "＄");
-    trie.insert("%", "％");
-    trie.insert("&", "＆");
-    trie.insert("*", "＊");
-    trie.insert("+", "＋");
-    trie.insert("=", "＝");
-    trie.insert("@", "＠");
-    trie.insert("^", "＾");
-    trie.insert("|", "｜");
-    trie.insert("\\", "\u{FF3C}");
-    trie.insert(":", "\u{FF1A}");
-    trie.insert(";", "\u{FF1B}");
-    trie.insert("\"", "\u{FF02}");
-    trie.insert("<", "\u{FF1C}");
-    trie.insert(">", "\u{FF1E}");
-    trie.insert("_", "\u{FF3F}");
-    trie.insert("`", "\u{FF40}");
 
     // Z-special symbols (Google Japanese Input style)
     trie.insert("z/", "・");
