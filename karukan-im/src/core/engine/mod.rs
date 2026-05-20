@@ -52,7 +52,7 @@ enum CandidateSource {
 impl CandidateSource {
     fn label(&self) -> &'static str {
         match self {
-            CandidateSource::UserDictionary => "\u{1F464} \u{30E6}\u{30FC}\u{30B6}\u{30FC}", // 👤 ユーザー
+            CandidateSource::UserDictionary => "\u{1F464} \u{30E6}\u{30FC}\u{30B6}\u{30FC}", // 👤 ユーザ
             CandidateSource::Learning => "\u{1F4DD} \u{5B66}\u{7FD2}", // 📝 学習
             CandidateSource::Model => "\u{1F916} AI",                  // 🤖 AI
             CandidateSource::Dictionary => "\u{1F4DA} \u{8F9E}\u{66F8}", // 📚 辞書

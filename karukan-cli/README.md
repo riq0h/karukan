@@ -1,6 +1,6 @@
 # karukan-cli
 
-karukan-engineを利用したCLIツール群。かな漢字変換サーバー、辞書ビルド、辞書ビューア、ベンチマーク評価ツールを提供します。
+karukan-engineを利用したCLIツール群。かな漢字変換サーバ、辞書ビルド、辞書ビューア、ベンチマーク評価ツールを提供します。
 
 ## Binaries
 
@@ -8,7 +8,7 @@ karukan-engineを利用したCLIツール群。かな漢字変換サーバー、
 |---------|------|
 | `karukan-dict` | 辞書のビルド（JSON/Mozc TSV → バイナリ）とビューア（Web UI + CLI検索） |
 | `sudachi-dict` | Sudachi CSVからJSON辞書を生成 |
-| `karukan-server` | かな漢字変換HTTPサーバー（Web UI付き） |
+| `karukan-server` | かな漢字変換HTTPサーバ（Web UI付き） |
 | `ajimee-bench` | AJIMEE-Bench評価ツール |
 
 ## Build
@@ -110,7 +110,7 @@ cargo run --release --bin sudachi-dict -- input.csv --model-scores --model jinen
 
 ## karukan-server
 
-ニューラルかな漢字変換を提供するHTTPサーバー。起動時にHuggingFaceからGGUFモデルを自動ダウンロードします。
+ニューラルかな漢字変換を提供するHTTPサーバ。起動時にHuggingFaceからGGUFモデルを自動ダウンロードします。
 
 ### 起動
 

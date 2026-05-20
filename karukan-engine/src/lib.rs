@@ -1,3 +1,4 @@
+pub mod align;
 pub mod dict;
 pub mod kana;
 pub mod kanji;

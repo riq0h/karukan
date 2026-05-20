@@ -11,7 +11,7 @@ karukan-imの辞書を拡張するための辞書導入手順です。
 | Mozc OSS辞書                | 約42万     | IPAdic由来の副助詞・接尾辞・連体詞等   |
 | 顔文字辞書                  | 約6000     | ASCII顔文字（`(^o^)` 等）              |
 
-> **Note:** 記号（`…`、括弧バリエーション等）とUnicode絵文字（😊、🥺等）は本体に同梱の SymbolRewriter / EmojiRewriter が自動生成するため、ユーザー辞書は不要です。「ぴえん」→ 🥺、`:smile` → 😊、「かっこ」→ 各種括弧、「さんてんりーだ」→ `…` などが既定で機能します。
+> **Note:** 記号（`…`、括弧バリエーション等）とUnicode絵文字（😊、🥺等）は本体に同梱の SymbolRewriter / EmojiRewriter が自動生成するため、ユーザ辞書は不要です。「ぴえん」→ 🥺、`:smile` → 😊、「かっこ」→ 各種括弧、「さんてんりーだ」→ `…` などが既定で機能します。
 
 ## 0. システム辞書のダウンロード
 
@@ -313,7 +313,7 @@ print(f"# Total: {count} entries", file=sys.stderr)
 PYEOF
 ```
 
-### 2.2 ユーザー辞書として配置
+### 2.2 ユーザ辞書として配置
 
 ```bash
 mkdir -p ~/.local/share/karukan-im/user_dicts
@@ -344,4 +344,4 @@ fcitx5 -r -d
 | tiwanari/emoticon   | MIT                          | https://github.com/tiwanari/emoticon                               |
 | Mozc emoticon.tsv   | BSD-3-Clause                 | https://github.com/google/mozc                                     |
 
-> **Note:** Mozc symbol.tsv と emoji_data.tsv は本体に同梱（`karukan-engine/data/symbols.yml`、`emoji.yml`）されており、ユーザー辞書としての導入は不要です。
+> **Note:** Mozc symbol.tsv と emoji_data.tsv は本体に同梱（`karukan-engine/data/symbols.yml`、`emoji.yml`）されており、ユーザ辞書としての導入は不要です。

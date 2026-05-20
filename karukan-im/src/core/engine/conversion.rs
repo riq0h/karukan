@@ -10,6 +10,13 @@ use super::*;
 /// Maximum number of learning candidates to show
 const MAX_LEARNING_CANDIDATES: usize = 3;
 
+/// True iff every character is a hiragana (excluding hiragana-range punctuation
+/// like `゛` and `゜`). Used to detect whether a selection can be used directly
+/// as a reading or needs alignment-based mapping.
+fn is_hiragana(c: char) -> bool {
+    ('\u{3041}'..='\u{3096}').contains(&c) || c == '\u{30FC}'
+}
+
 /// Mozc-style width/script annotation for a pure-kana candidate, or `None`
 /// if the text mixes scripts or contains kanji/punctuation. Used to label
 /// `あ` / `ア` / `ｱ` candidates in the conversion list.
@@ -250,17 +257,43 @@ impl InputMethodEngine {
 
         let full_text = self.input_buf.text.clone();
 
-        // Selection-based partial conversion: convert only the selected range
+        // Selection-based partial conversion: convert only the selected range.
+        //
+        // When the selection contains non-hiragana characters (e.g. the user
+        // is re-converting a portion of an already-converted result like
+        // "ペン" in "私はペンです"), align the surface against the original
+        // hiragana reading saved in `original_composing_text` and convert the
+        // mapped reading range instead of the surface text. For pure-hiragana
+        // selections the surface itself is the reading, so the alignment step
+        // is skipped.
         let (reading, remaining) =
             if let Some((sel_start, sel_end)) = self.input_buf.selection_range() {
-                let before: String = full_text.chars().take(sel_start).collect();
                 let selected: String = full_text
                     .chars()
                     .skip(sel_start)
                     .take(sel_end - sel_start)
                     .collect();
-                let after: String = full_text.chars().skip(sel_end).collect();
-                (selected, Some((before, after)))
+                let is_pure_hiragana =
+                    !selected.is_empty() && selected.chars().all(is_hiragana);
+
+                if is_pure_hiragana || self.original_composing_text.is_none() {
+                    let before: String = full_text.chars().take(sel_start).collect();
+                    let after: String = full_text.chars().skip(sel_end).collect();
+                    (selected, Some((before, after)))
+                } else {
+                    let original = self.original_composing_text.as_ref().unwrap();
+                    let segments = karukan_engine::align::align(&full_text, original);
+                    let (r_start, r_end, expanded_start, expanded_end) =
+                        karukan_engine::align::map_range(&segments, sel_start, sel_end);
+                    let reading: String = original
+                        .chars()
+                        .skip(r_start)
+                        .take(r_end - r_start)
+                        .collect();
+                    let before: String = full_text.chars().take(expanded_start).collect();
+                    let after: String = full_text.chars().skip(expanded_end).collect();
+                    (reading, Some((before, after)))
+                }
             } else {
                 (full_text, None)
             };
@@ -1091,19 +1124,42 @@ impl InputMethodEngine {
 
     /// Prepare for transitioning from Conversion back to Composing with selection.
     ///
-    /// Cleans up conversion state and restores Composing state so that
-    /// `shift_select_*` can be called immediately after.
+    /// Bakes the current selected candidate into `input_buf` so the user can
+    /// select within the already-converted text and re-convert a portion of
+    /// it (mozc-style segment re-conversion). The original hiragana reading is
+    /// preserved in `original_composing_text` for alignment-based mapping when
+    /// the user later selects a kanji/katakana range and presses Space.
     fn prepare_cancel_for_selection(&mut self, cursor_at_start: bool) {
         self.conversion_space_count = 0;
-        self.remaining_after_conversion = None;
-        let reading = self.input_buf.text.clone();
+
+        // Save the original reading for later alignment if not already set.
+        if self.original_composing_text.is_none() {
+            self.original_composing_text = Some(self.input_buf.text.clone());
+        }
+
+        // Bake the current candidate (or fall back to the raw reading if no
+        // candidates are available, e.g. empty conversion state).
+        let baked = self
+            .selected_conversion_info()
+            .map(|(t, _)| t)
+            .unwrap_or_else(|| self.input_buf.text.clone());
+
+        // Combine with any in-progress partial-conversion fragments so the
+        // baked text reflects the full composing buffer the user is editing.
+        let new_text = if let Some((before, after)) = self.remaining_after_conversion.take() {
+            format!("{}{}{}", before, baked, after)
+        } else {
+            baked
+        };
+
+        self.input_buf.text = new_text;
         self.input_buf.cursor_pos = if cursor_at_start {
             0
         } else {
-            reading.chars().count()
+            self.input_buf.text.chars().count()
         };
         self.converters.romaji.reset();
-        for ch in reading.chars() {
+        for ch in self.input_buf.text.chars() {
             self.converters.romaji.push(ch);
         }
         self.live.text.clear();

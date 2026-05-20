@@ -136,14 +136,36 @@ impl InputMethodEngine {
         self.move_caret(total)
     }
 
+    /// If live conversion is active, bake the converted text into `input_buf`
+    /// so subsequent selection operates on the visible (converted) text rather
+    /// than the hidden hiragana reading. The original reading is preserved in
+    /// `original_composing_text` for alignment-based mapping in `start_conversion`.
+    fn bake_live_for_selection(&mut self) {
+        if self.live.text.is_empty() {
+            return;
+        }
+        if self.original_composing_text.is_none() {
+            self.original_composing_text = Some(self.input_buf.text.clone());
+        }
+        self.input_buf.text = self.live.text.clone();
+        self.input_buf.cursor_pos = self.input_buf.text.chars().count();
+        self.live.text.clear();
+        self.converters.romaji.reset();
+        for ch in self.input_buf.text.chars() {
+            self.converters.romaji.push(ch);
+        }
+    }
+
     /// Shift+Left: extend/shrink selection to the left
     pub(super) fn shift_select_left(&mut self) -> EngineResult {
+        self.bake_live_for_selection();
         let new_pos = self.input_buf.cursor_pos.saturating_sub(1);
         self.shift_select(new_pos)
     }
 
     /// Shift+Right: extend/shrink selection to the right
     pub(super) fn shift_select_right(&mut self) -> EngineResult {
+        self.bake_live_for_selection();
         let total = self.input_buf.text.chars().count();
         let new_pos = (self.input_buf.cursor_pos + 1).min(total);
         self.shift_select(new_pos)
@@ -151,11 +173,13 @@ impl InputMethodEngine {
 
     /// Shift+Home: extend selection to the beginning
     pub(super) fn shift_select_home(&mut self) -> EngineResult {
+        self.bake_live_for_selection();
         self.shift_select(0)
     }
 
     /// Shift+End: extend selection to the end
     pub(super) fn shift_select_end(&mut self) -> EngineResult {
+        self.bake_live_for_selection();
         let total = self.input_buf.text.chars().count();
         self.shift_select(total)
     }
