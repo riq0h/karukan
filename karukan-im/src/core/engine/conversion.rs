@@ -1,4 +1,5 @@
-//! Conversion state handling (candidates, segments, commit)
+//! Conversion state handling (candidates, commit). The live-conversion
+//! chunking lives in the sibling `chunk` module.
 
 use std::collections::HashSet;
 use std::time::Instant;
@@ -82,7 +83,16 @@ impl InputMethodEngine {
     /// model is trained on kana → kanji and hallucinates garbage (e.g. `「` → `w`)
     /// for symbol- or alphabet-only inputs. Rule-based variants from
     /// `SymbolRewriter` cover those cases instead.
-    fn run_kana_kanji_conversion(&mut self, reading: &str, num_candidates: usize) -> Vec<String> {
+    ///
+    /// `api_context` is the left context (lctx) fed to the model. Callers pass
+    /// `truncate_context_for_api()` for a whole-buffer conversion, or — for
+    /// chunked live conversion — the converted text of the preceding chunks.
+    pub(super) fn run_kana_kanji_conversion(
+        &mut self,
+        reading: &str,
+        api_context: &str,
+        num_candidates: usize,
+    ) -> Vec<String> {
         if !karukan_engine::contains_kana(reading) {
             return vec![];
         }
@@ -90,7 +100,6 @@ impl InputMethodEngine {
             return vec![];
         };
         let katakana = karukan_engine::hiragana_to_katakana(reading);
-        let api_context = self.truncate_context_for_api();
         let main_model_name = converter.model_display_name().to_string();
 
         let strategy = self.determine_strategy(reading, num_candidates);
@@ -110,12 +119,12 @@ impl InputMethodEngine {
                 let (default_top1, light_candidates) = std::thread::scope(|s| {
                     let h_default = s.spawn(|| {
                         converter
-                            .convert(&katakana, &api_context, 1)
+                            .convert(&katakana, api_context, 1)
                             .unwrap_or_default()
                     });
                     let h_beam = s.spawn(|| {
                         light_converter
-                            .convert(&katakana, &api_context, bw)
+                            .convert(&katakana, api_context, bw)
                             .unwrap_or_default()
                     });
                     (
@@ -130,14 +139,14 @@ impl InputMethodEngine {
                     return vec![];
                 };
                 light_converter
-                    .convert(&katakana, &api_context, 1)
+                    .convert(&katakana, api_context, 1)
                     .unwrap_or_default()
             }
             ConversionStrategy::MainModelOnly => converter
-                .convert(&katakana, &api_context, 1)
+                .convert(&katakana, api_context, 1)
                 .unwrap_or_default(),
             ConversionStrategy::MainModelBeam { beam_width } => converter
-                .convert(&katakana, &api_context, *beam_width)
+                .convert(&katakana, api_context, *beam_width)
                 .unwrap_or_default(),
         };
 
@@ -168,34 +177,13 @@ impl InputMethodEngine {
         candidates
     }
 
-    /// Run inference for auto-suggest and return candidates (raw strings).
-    /// Initializes the kanji converter lazily. Falls back to the reading itself
-    /// if no candidates are produced.
-    pub(super) fn run_auto_suggest(&mut self, reading: &str, num_candidates: usize) -> Vec<String> {
-        // Ensure kanji converter is initialized
-        if self.converters.kanji.is_none()
-            && let Err(e) = self.init_kanji_converter()
-        {
-            debug!("Failed to initialize kanji converter: {}", e);
-            return vec![reading.to_string()];
-        }
-
-        let candidates = self.run_kana_kanji_conversion(reading, num_candidates);
-
-        if candidates.is_empty() {
-            vec![reading.to_string()]
-        } else {
-            candidates
-        }
-    }
-
     /// Select from auto-suggest candidates (Tab/Down in Composing state).
     ///
     /// If auto-suggest candidates are available, enters Conversion state with those
     /// candidates (bypassing model re-inference). Falls back to `start_conversion()`
     /// if no candidates are stored.
     pub(super) fn select_auto_suggest(&mut self) -> EngineResult {
-        let candidates = match self.suggest_candidates.take() {
+        let mut candidates = match self.suggest_candidates.take() {
             Some(c) if !c.is_empty() => c,
             _ => return self.start_conversion(false),
         };
@@ -207,7 +195,24 @@ impl InputMethodEngine {
         self.converters.romaji.reset();
         self.input_buf.cursor_pos = 0;
         self.input_buf.clear_selection();
-        self.live.text.clear();
+
+        // Preserve the live-conversion text (if any) as the top candidate so
+        // pressing Down/Tab doesn't lose what the user was looking at during
+        // live conversion. Skip when it equals the reading (no useful AI
+        // suggestion) or already appears in the list.
+        let live_text = std::mem::take(&mut self.live.text);
+        if !live_text.is_empty()
+            && live_text != reading
+            && !candidates.iter().any(|c| c.text == live_text)
+        {
+            candidates.insert(0, Candidate::with_reading(&live_text, &reading));
+        }
+
+        // Always include the raw reading as a fallback so the user can
+        // commit the unmodified hiragana from the candidate list.
+        if !reading.is_empty() && !candidates.iter().any(|c| c.text == reading) {
+            candidates.push(Candidate::with_reading(&reading, &reading));
+        }
 
         if reading.is_empty() {
             return EngineResult::consumed();
@@ -507,7 +512,8 @@ impl InputMethodEngine {
             debug!("Failed to initialize kanji converter: {}", e);
         }
 
-        let candidates = self.run_kana_kanji_conversion(reading, num_candidates);
+        let api_context = self.truncate_context_for_api();
+        let candidates = self.run_kana_kanji_conversion(reading, &api_context, num_candidates);
 
         let hiragana = reading.to_string();
         let katakana = karukan_engine::hiragana_to_katakana(reading);
@@ -805,9 +811,6 @@ impl InputMethodEngine {
         }
 
         self.enter_empty_state();
-        if self.input_mode == InputMode::Emoji {
-            self.input_mode = InputMode::Hiragana;
-        }
 
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(Preedit::new()))
@@ -837,9 +840,6 @@ impl InputMethodEngine {
         };
 
         self.enter_empty_state();
-        if self.input_mode == InputMode::Emoji {
-            self.input_mode = InputMode::Hiragana;
-        }
 
         // Start new input with the character
         let new_input_result = self.start_input(ch);
@@ -927,6 +927,17 @@ impl InputMethodEngine {
     /// Go to previous candidate page
     fn prev_candidate_page(&mut self) -> EngineResult {
         self.navigate_candidate(CandidateList::prev_page)
+    }
+
+    /// Select and commit the candidate at `page_index` (0-based) within the
+    /// current page, like pressing the digit key `page_index + 1`. Not
+    /// consumed unless a candidate list is active (Conversion state).
+    pub fn select_candidate_on_page(&mut self, page_index: usize) -> EngineResult {
+        let start = std::time::Instant::now();
+        self.metrics.conversion_ms = 0;
+        let result = self.select_candidate_by_digit(page_index + 1);
+        self.metrics.process_key_ms = start.elapsed().as_millis() as u64;
+        result
     }
 
     /// Select candidate by digit (1-9)

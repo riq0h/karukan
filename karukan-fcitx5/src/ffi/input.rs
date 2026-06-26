@@ -2,7 +2,7 @@
 
 use std::ffi::{c_char, c_int, c_uint};
 
-use crate::core::keycode::{KeyEvent, KeyModifiers, Keysym};
+use karukan_im::core::keycode::{KeyEvent, KeyModifiers, Keysym};
 
 use super::{KarukanEngine, ffi_mut};
 
@@ -18,9 +18,7 @@ pub extern "C" fn karukan_engine_process_key(
     let engine = ffi_mut!(engine, 0);
     engine.clear_flags();
 
-    // Convert modifier state
     let modifiers = KeyModifiers::from_modifier_state(state);
-
     let key_event = KeyEvent::new(Keysym(keysym), modifiers, is_release == 0);
     let result = engine.engine.process_key(&key_event);
 
@@ -42,7 +40,7 @@ pub extern "C" fn karukan_engine_reset(engine: *mut KarukanEngine) {
 
     // Try to salvage text from Conversion first, then Composing.
     let salvage_text = engine.engine.commit_if_converting().or_else(|| {
-        use crate::core::state::InputState;
+        use karukan_im::InputState;
         if matches!(engine.engine.state(), InputState::Composing { .. }) {
             let text = engine.engine.composing_text().to_string();
             if text.is_empty() { None } else { Some(text) }
@@ -83,7 +81,6 @@ pub extern "C" fn karukan_engine_set_surrounding_text(
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("set_surrounding_text: invalid UTF-8: {}", e);
-                // Clear context on invalid input to avoid stale data
                 engine.engine.set_surrounding_context("", "");
                 return;
             }
@@ -93,21 +90,7 @@ pub extern "C" fn karukan_engine_set_surrounding_text(
     // cursor_pos from fcitx5's SurroundingText::cursor() is always a character
     // (code point) offset. Each frontend (Wayland, GTK, Qt) normalizes its native
     // unit to character offset before storing in SurroundingText.
-    let char_offset = cursor_pos as usize;
-    let byte_offset = text_str
-        .char_indices()
-        .nth(char_offset)
-        .map(|(i, _)| i)
-        .unwrap_or(text_str.len());
-
-    let left_context = &text_str[..byte_offset];
-    let right_context = &text_str[byte_offset..];
-    tracing::debug!(
-        "set_surrounding_text: left=\"{}\" right=\"{}\"",
-        left_context,
-        right_context
-    );
     engine
         .engine
-        .set_surrounding_context(left_context, right_context);
+        .set_surrounding_text_at(text_str, cursor_pos as usize);
 }

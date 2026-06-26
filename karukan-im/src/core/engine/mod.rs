@@ -3,6 +3,7 @@
 //! This module contains the main `InputMethodEngine` struct that coordinates between
 //! the romaji converter, kanji converter, and manages the IME state.
 
+mod chunk;
 mod conversion;
 mod cursor;
 mod display;
@@ -133,10 +134,21 @@ pub struct InputMethodEngine {
     metrics: ConversionMetrics,
     /// Current input mode (Hiragana, Katakana, or Alphabet)
     input_mode: InputMode,
+    /// Mode active immediately before entering [`InputMode::Emoji`],
+    /// so commit/cancel/backspace-to-empty can put the user back where
+    /// they were instead of dropping them in Hiragana every time. `None`
+    /// whenever the current mode is not Emoji.
+    pre_emoji_mode: Option<InputMode>,
     /// Composed input buffer (hiragana text, cursor position)
     input_buf: InputBuffer,
     /// Live conversion state
     live: LiveConversion,
+    /// Internal chunking of the composing buffer used by
+    /// `chunked_auto_suggest`: a cache of the per-chunk model conversions.
+    /// Re-chunking diffs the new buffer against this by common prefix/suffix so
+    /// a keystroke only reconverts the chunk it touched, not the whole buffer.
+    /// Empty when not composing.
+    chunks: Vec<ComposingChunk>,
     /// Dictionaries (system, user)
     dicts: Dictionaries,
     /// Learning cache (user conversion history)
@@ -168,8 +180,10 @@ impl InputMethodEngine {
             config: EngineConfig::default(),
             metrics: ConversionMetrics::default(),
             input_mode: InputMode::Hiragana,
+            pre_emoji_mode: None,
             input_buf: InputBuffer::new(),
             live: LiveConversion::default(),
+            chunks: Vec::new(),
             dicts: Dictionaries::default(),
             learning: None,
             remaining_after_conversion: None,
@@ -188,7 +202,9 @@ impl InputMethodEngine {
         }
     }
 
-    /// Get last conversion time in milliseconds (inference only)
+    /// Conversion (inference) time of the last `process_key` /
+    /// `select_candidate_on_page` call in milliseconds; 0 when that call
+    /// ran no conversion.
     pub fn last_conversion_ms(&self) -> u64 {
         self.metrics.conversion_ms
     }
@@ -255,8 +271,10 @@ impl InputMethodEngine {
         self.state = InputState::Empty;
         self.converters.romaji.reset();
         self.input_mode = InputMode::Hiragana;
+        self.pre_emoji_mode = None;
         self.input_buf.clear();
         self.live.text.clear();
+        self.chunks.clear();
         self.metrics = ConversionMetrics::default();
     }
 
@@ -303,14 +321,21 @@ impl InputMethodEngine {
         self.input_buf.clear();
         self.converters.romaji.reset();
         self.live.text.clear();
+        self.chunks.clear();
         self.remaining_after_conversion = None;
         self.suggest_candidates = None;
         self.conversion_space_count = 0;
         self.original_composing_text = None;
-        // Revert to hiragana on Empty transition so that the next input
-        // session starts in hiragana mode (Shift+letter can re-enter alphabet).
-        self.input_mode = InputMode::Hiragana;
+        // Restore the pre-emoji mode if we were in Emoji mode, otherwise fall
+        // through to Hiragana so the next input session can re-enter Alphabet
+        // via Shift+letter.
+        if self.input_mode == InputMode::Emoji {
+            self.input_mode = self.pre_emoji_mode.take().unwrap_or(InputMode::Hiragana);
+        } else {
+            self.input_mode = InputMode::Hiragana;
+        }
     }
+
 
     /// If the display is empty, reset to Empty state and return the result.
     /// Returns None if display is not empty (caller should continue normally).
@@ -366,6 +391,20 @@ impl InputMethodEngine {
         if !new_from_flush.is_empty() {
             self.input_buf.insert(&new_from_flush);
         }
+    }
+
+    /// Set surrounding context from the full text plus a cursor offset in
+    /// Unicode scalar values (the unit both fcitx5 and the JSON-RPC
+    /// protocol deliver). Splits at the cursor and delegates to
+    /// [`Self::set_surrounding_context`].
+    pub fn set_surrounding_text_at(&mut self, text: &str, cursor_chars: usize) {
+        let byte_offset = text
+            .char_indices()
+            .nth(cursor_chars)
+            .map(|(i, _)| i)
+            .unwrap_or(text.len());
+        let (left, right) = text.split_at(byte_offset);
+        self.set_surrounding_context(left, right);
     }
 
     /// Set both left and right context from surrounding text (from editor)
@@ -501,6 +540,8 @@ impl InputMethodEngine {
         );
 
         let start = std::time::Instant::now();
+        // conversion_ms reports this key only: 0 unless a conversion runs below
+        self.metrics.conversion_ms = 0;
 
         let shift_active = key.modifiers.shift_key;
 
@@ -582,6 +623,22 @@ impl InputMethodEngine {
                 text
             }
         }
+    }
+
+    /// Commit any pending input as an [`EngineResult`], emitting the same
+    /// UI cleanup actions as the key-driven commit path (Enter), so
+    /// frontends don't have to pair [`Self::commit`] with manual
+    /// preedit/candidate-window teardown.
+    pub fn commit_result(&mut self) -> EngineResult {
+        let text = self.commit();
+        let mut result =
+            EngineResult::consumed().with_action(EngineAction::UpdatePreedit(Preedit::new()));
+        if !text.is_empty() {
+            result = result.with_action(EngineAction::Commit(text));
+        }
+        result
+            .with_action(EngineAction::HideCandidates)
+            .with_action(EngineAction::HideAuxText)
     }
 
     /// Save the learning cache to disk if it has unsaved changes.

@@ -101,6 +101,29 @@ fn test_live_conversion_commit_with_converted_text() {
 }
 
 #[test]
+fn test_commit_composing_hides_candidate_window() {
+    // Committing from Composing (Enter) must close the auto-suggest/live
+    // conversion candidate window. The macOS frontend only closes its
+    // NSPanel on an explicit hide_candidates action, so a commit without
+    // it leaves a stale window on screen.
+    let mut engine = make_live_conversion_engine();
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.live.text = "愛".to_string();
+
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert!(result.consumed);
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::HideCandidates)),
+        "commit from Composing must emit HideCandidates"
+    );
+}
+
+#[test]
 fn test_live_conversion_commit_empty_falls_back_to_hiragana() {
     // When live_conversion_text is empty, commit should use hiragana
     let mut engine = make_live_conversion_engine();
@@ -149,6 +172,54 @@ fn test_live_conversion_build_preedit() {
     assert_eq!(preedit.caret(), 2); // 漢字 = 2 chars
 }
 
+#[test]
+fn test_alphabet_mode_with_kana_keeps_converting() {
+    // Live conversion must stay alive in alphabet mode as long as the buffer
+    // still contains kana. Type hiragana, switch to alphabet mode, keep typing:
+    // the mixed reading (e.g. `あAb`) must keep being reconverted instead of
+    // freezing at a stale live.text.
+    let mut engine = make_live_conversion_engine();
+
+    // "あ" then Shift+letter switches into alphabet mode -> buffer "あA"
+    engine.process_key(&press('a'));
+    engine.process_key(&press_shift('A'));
+    assert!(engine.input_mode == InputMode::Alphabet);
+    assert!(karukan_engine::contains_kana(&engine.input_buf.text));
+
+    // Simulate a previous live conversion result lingering on screen.
+    engine.live.text = "亜A".to_string();
+
+    // Typing another latin char re-runs refresh_input_state. Because the buffer
+    // still has kana, the "preserve display" early-return is bypassed and
+    // conversion runs again; with no model loaded run_auto_suggest returns the
+    // reading itself, so live.text is cleared rather than frozen.
+    engine.process_key(&press('b'));
+    assert!(
+        engine.live.text.is_empty(),
+        "mixed kana buffer must reconvert in alphabet mode, not preserve stale live.text"
+    );
+}
+
+#[test]
+fn test_alphabet_mode_pure_latin_preserves_live_text() {
+    // Regression guard for the original behavior: with no kana in the buffer,
+    // alphabet mode preserves an existing live.text display without re-running
+    // conversion (raw latin has nothing for the model to convert).
+    let mut engine = make_live_conversion_engine();
+
+    // Enter alphabet mode with pure latin "Ab".
+    engine.process_key(&press_shift('A'));
+    engine.process_key(&press('b'));
+    assert!(engine.input_mode == InputMode::Alphabet);
+    assert!(!karukan_engine::contains_kana(&engine.input_buf.text));
+
+    engine.live.text = "AB".to_string();
+
+    // Another latin char keeps the preserved live.text (no reconversion).
+    engine.process_key(&press('c'));
+    assert_eq!(engine.live.text, "AB");
+}
+
 // --- Ctrl+Space full-width space tests ---
 
 #[test]
@@ -174,25 +245,15 @@ fn test_space_commits_fullwidth_space_in_empty() {
 }
 
 #[test]
-fn test_ctrl_space_commits_fullwidth_space_in_empty() {
+fn test_ctrl_space_in_empty_passes_through() {
     let mut engine = InputMethodEngine::new();
 
-    // Ctrl+Space in Empty state -> also commit full-width space directly
+    // Bare Space (no Ctrl) handles full-width space in Hiragana mode.
+    // Ctrl+Space in Empty is no longer intercepted; it falls through to
+    // the OS so the user can use it for app-level shortcuts.
     let result = engine.process_key(&press_ctrl(Keysym::SPACE));
-    assert!(result.consumed);
+    assert!(!result.consumed);
     assert!(matches!(engine.state(), InputState::Empty));
-    let commit_text = result
-        .actions
-        .iter()
-        .find_map(|a| {
-            if let EngineAction::Commit(text) = a {
-                Some(text.clone())
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert_eq!(commit_text, "\u{3000}");
 }
 
 #[test]

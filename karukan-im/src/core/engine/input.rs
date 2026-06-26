@@ -14,8 +14,14 @@ fn append_candidates_dedup(target: &mut Vec<Candidate>, source: Vec<Candidate>) 
 impl InputMethodEngine {
     /// Refresh the input state: rebuild preedit and run auto-suggest for candidates.
     pub(super) fn refresh_input_state(&mut self) -> EngineResult {
-        // Alphabet mode with active live conversion: preserve the conversion display
-        if self.input_mode == InputMode::Alphabet && !self.live.text.is_empty() {
+        // Alphabet mode with active live conversion but no kana left to convert:
+        // preserve the existing conversion display without re-running the model.
+        // (When the buffer still contains kana we fall through and reconvert below,
+        // so a mixed reading like `きょうはABC` keeps live-converting.)
+        if self.input_mode == InputMode::Alphabet
+            && !self.live.text.is_empty()
+            && !karukan_engine::contains_kana(&self.input_buf.text)
+        {
             let preedit = self.set_composing_state();
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
@@ -24,6 +30,7 @@ impl InputMethodEngine {
         if !self.config.auto_suggest {
             self.live.text.clear();
             self.suggest_candidates = None;
+            self.chunks.clear();
             let preedit = self.set_composing_state();
             return EngineResult::consumed()
                 .with_action(EngineAction::UpdatePreedit(preedit))
@@ -31,19 +38,24 @@ impl InputMethodEngine {
                 .with_action(EngineAction::HideAuxText);
         }
 
-        // Run auto-suggest (skip in alphabet mode — no hiragana to convert)
-        let candidates =
-            if self.input_mode != InputMode::Alphabet && !self.input_buf.text.is_empty() {
-                let reading = self.input_buf.text.clone();
-                let result = self.run_auto_suggest(&reading, 1);
-                if !result.is_empty() && result[0] != self.input_buf.text {
-                    Some((result, reading))
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+        // Run auto-suggest via chunked conversion. Normally skipped in alphabet
+        // mode (raw latin has no hiragana to convert), but if the buffer still
+        // contains kana — e.g. the user typed hiragana, switched to alphabet mode,
+        // and kept typing — keep converting the mixed reading so live conversion
+        // stays alive. `chunked_auto_suggest` splits long input into
+        // bounded-length chunks so per-keystroke latency stays flat; for input
+        // within one chunk this is identical to a whole-buffer call.
+        let convert = !self.input_buf.text.is_empty()
+            && (self.input_mode != InputMode::Alphabet
+                || karukan_engine::contains_kana(&self.input_buf.text));
+        let candidates = if convert {
+            let reading = self.input_buf.text.clone();
+            self.chunked_auto_suggest()
+                .map(|converted| (vec![converted], reading))
+        } else {
+            self.chunks.clear();
+            None
+        };
 
         let Some((candidates, reading)) = candidates else {
             // No useful AI suggestion — still show learning + dictionary + rule-based
@@ -75,23 +87,31 @@ impl InputMethodEngine {
         if self.live.enabled && self.input_mode != InputMode::Katakana {
             self.live.text = candidates[0].clone();
             let preedit = self.set_composing_state();
-            let mut result =
-                EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
 
-            // Learning candidates first, then dictionary candidates
+            // Same candidate ordering as normal auto-suggest (learning → model →
+            // dictionary). Including the model candidates guarantees the list is
+            // never empty, so the candidate window — whose aux line is where
+            // frontends show the raw reading once the preedit displays converted
+            // text — stays on screen for the whole live conversion.
             let mut all_candidates = self.lookup_learning_candidates(&reading);
+            let model_candidates: Vec<Candidate> = candidates
+                .into_iter()
+                .map(|s| Candidate::with_reading(s, &reading))
+                .collect();
+            append_candidates_dedup(&mut all_candidates, model_candidates);
             append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
-            if all_candidates.is_empty() {
-                self.suggest_candidates = None;
-                result = result.with_action(EngineAction::HideCandidates);
+            self.suggest_candidates = if all_candidates.is_empty() {
+                None
             } else {
-                self.suggest_candidates = Some(all_candidates.clone());
-                result = result.with_action(EngineAction::ShowCandidates(CandidateList::new(
-                    all_candidates,
-                )));
-            }
+                Some(all_candidates.clone())
+            };
             let aux = self.format_aux_suggest(&self.input_buf.text.clone());
-            return result.with_action(EngineAction::UpdateAuxText(aux));
+            return EngineResult::consumed()
+                .with_action(EngineAction::UpdatePreedit(preedit))
+                .with_action(EngineAction::ShowCandidates(CandidateList::new(
+                    all_candidates,
+                )))
+                .with_action(EngineAction::UpdateAuxText(aux));
         }
 
         // Normal auto-suggest: show hiragana preedit + learning/model/dict candidates
@@ -119,10 +139,27 @@ impl InputMethodEngine {
 
     /// Process key in empty state
     pub(super) fn process_key_empty(&mut self, key: &KeyEvent, shift_active: bool) -> EngineResult {
-        // Space / Ctrl+Space: commit full-width space directly
-        if key.keysym == Keysym::SPACE && !key.modifiers.alt_key {
-            return EngineResult::consumed()
-                .with_action(EngineAction::Commit("\u{3000}".to_string()));
+        // Bare Space from Empty state:
+        //
+        // * Hiragana mode → commit a full-width `　` directly, matching
+        //   the Japanese-IME convention. We deliberately do NOT enter
+        //   Composing here: if we did, the next Space the user typed
+        //   would be interpreted by `process_key_composing` as the
+        //   conversion trigger and an unwanted candidate window would
+        //   appear after two spaces in a row.
+        // * Any other mode → return `not_consumed` so the OS delivers
+        //   a normal half-width ASCII space to the application. The
+        //   user is either typing ASCII (Alphabet) or in an edge mode
+        //   (Katakana / Emoji) where injecting `　` would be wrong.
+        //
+        // The full-width space gesture from Empty in any mode is
+        // `Ctrl+Space` (above), which seeds a Composing session.
+        if key.keysym == Keysym::SPACE && !key.modifiers.control_key && !key.modifiers.alt_key {
+            return if self.input_mode == InputMode::Hiragana {
+                EngineResult::consumed().with_action(EngineAction::Commit("\u{3000}".to_string()))
+            } else {
+                EngineResult::not_consumed()
+            };
         }
 
         // `:` from Empty state enters emoji shortcode mode — `:pien` stays
@@ -316,6 +353,13 @@ impl InputMethodEngine {
         self.converters.romaji.reset();
         self.input_buf.clear();
         self.live.text.clear();
+        // Remember where the user was so commit/cancel/erase-to-empty
+        // can drop them back into the same mode (e.g. Katakana stays
+        // Katakana). Guard against clobbering on re-entry just in case
+        // start_emoji_mode is ever called while already in Emoji mode.
+        if self.input_mode != InputMode::Emoji {
+            self.pre_emoji_mode = Some(self.input_mode);
+        }
         self.input_mode = InputMode::Emoji;
         self.input_buf.insert(":");
         self.refresh_input_state()
@@ -397,7 +441,9 @@ impl InputMethodEngine {
 
         if text.is_empty() {
             self.enter_empty_state();
-            return EngineResult::consumed().with_action(EngineAction::HideAuxText);
+            return EngineResult::consumed()
+                .with_action(EngineAction::HideCandidates)
+                .with_action(EngineAction::HideAuxText);
         }
 
         // Record learning: use original hiragana reading if this commit follows
@@ -411,15 +457,16 @@ impl InputMethodEngine {
             self.original_composing_text = None;
         }
 
-        let was_emoji = self.input_mode == InputMode::Emoji;
         self.enter_empty_state();
-        if was_emoji {
-            self.input_mode = InputMode::Hiragana;
-        }
 
+        // HideCandidates is required here: the auto-suggest/live-conversion
+        // window may be open while Composing, and the macOS frontend's
+        // NSPanel only closes on an explicit hide (fcitx5 resets its panel
+        // on commit implicitly, which masked this on Linux).
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(Preedit::new()))
             .with_action(EngineAction::Commit(text))
+            .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
     }
 
@@ -446,11 +493,7 @@ impl InputMethodEngine {
                 None
             };
 
-        let was_emoji = self.input_mode == InputMode::Emoji;
         self.enter_empty_state();
-        if was_emoji {
-            self.input_mode = InputMode::Hiragana;
-        }
 
         let mut result = EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(Preedit::new()))

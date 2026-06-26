@@ -6,6 +6,7 @@ use crate::core::keycode::KeyModifiers;
 mod alphabet;
 mod basic;
 mod candidates;
+mod chunks;
 mod conversion;
 mod cursor;
 mod emoji;

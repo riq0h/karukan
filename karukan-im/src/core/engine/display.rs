@@ -82,16 +82,15 @@ impl InputMethodEngine {
         preedit
     }
 
-    /// Get combined context display string (lctx: ... rctx: ...)
-    /// Only displays context when surrounding text has been set from the editor.
-    pub(super) fn display_context(&self) -> String {
+    /// Format an `lctx: … rctx: …` line from explicit left/right context
+    /// strings, each truncated to `display_context_len` (left keeps its tail,
+    /// right keeps its head). Empty when both are absent or the limit is 0.
+    fn context_line(&self, left: Option<&str>, right: Option<&str>) -> String {
         let max_len = self.config.display_context_len;
         if max_len == 0 {
             return String::new();
         }
-        let ctx = self.surrounding_context.as_ref();
-
-        let lctx = ctx.and_then(|c| c.left.as_deref()).map(|left| {
+        let lctx = left.filter(|s| !s.is_empty()).map(|left| {
             let char_count = left.chars().count();
             if char_count > max_len {
                 let start = char_count - max_len;
@@ -101,7 +100,7 @@ impl InputMethodEngine {
             }
         });
 
-        let rctx = ctx.and_then(|c| c.right.as_deref()).map(|right| {
+        let rctx = right.filter(|s| !s.is_empty()).map(|right| {
             let char_count = right.chars().count();
             if char_count > max_len {
                 format!("{}...", right.chars().take(max_len).collect::<String>())
@@ -116,6 +115,33 @@ impl InputMethodEngine {
             (None, Some(r)) => format!("rctx: {}", r),
             (None, None) => String::new(),
         }
+    }
+
+    /// Surrounding-text context line (editor left/right). Used by conversion-mode
+    /// aux text, where there is no live chunking.
+    pub(super) fn display_context(&self) -> String {
+        let ctx = self.surrounding_context.as_ref();
+        self.context_line(
+            ctx.and_then(|c| c.left.as_deref()),
+            ctx.and_then(|c| c.right.as_deref()),
+        )
+    }
+
+    /// Context line for live conversion (composing / auto-suggest). The single
+    /// `lctx:` shown is the *current chunk's* left context — the editor
+    /// surrounding text plus the converted text of the preceding chunks, derived
+    /// via `chunk_lctx` — so the model context that chunk uses is what gets
+    /// displayed, rather than a second redundant lctx. It already folds in the
+    /// editor surrounding left context (so an empty buffer shows it as-is). The
+    /// right side stays the editor surrounding right context.
+    pub(super) fn display_context_chunked(&self) -> String {
+        let lctx = self.chunk_lctx(self.current_chunk_index());
+        let left = (!lctx.is_empty()).then_some(lctx.as_str());
+        let right = self
+            .surrounding_context
+            .as_ref()
+            .and_then(|c| c.right.as_deref());
+        self.context_line(left, right)
     }
 
     /// Get the current mode indicator string
@@ -139,7 +165,7 @@ impl InputMethodEngine {
 
     /// Format aux text for composing input mode
     pub(super) fn format_aux_composing(&self) -> String {
-        let ctx = self.display_context();
+        let ctx = self.display_context_chunked();
         let model = self.model_name();
         let indicator = self.mode_indicator();
         // Show reading + unconverted romaji buffer (e.g. "わせだd")
@@ -217,7 +243,10 @@ impl InputMethodEngine {
     /// Note: token count is not shown here to avoid performance overhead on every keystroke
     /// Timing shows inference_ms/process_key_ms (process_key_ms is from previous keystroke)
     pub(super) fn format_aux_suggest(&self, reading: &str) -> String {
-        let ctx = self.display_context();
+        // Single context block: the lctx is the current chunk's actual left
+        // context (see `display_context_chunked`), so there is no separate
+        // per-chunk lctx fragment widening the candidate window.
+        let ctx = self.display_context_chunked();
         let timing = format!(
             "{}ms/{}ms",
             self.metrics.conversion_ms, self.metrics.process_key_ms

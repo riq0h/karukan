@@ -47,6 +47,12 @@ pub struct ConversionSettings {
     pub use_context: bool,
     /// Maximum number of surrounding text characters passed to the conversion API
     pub max_context_length: usize,
+    /// Maximum reading length (in characters) converted by the model in a single
+    /// call during live conversion. The composing buffer is split into chunks
+    /// of at most this many characters so per-keystroke latency stays bounded
+    /// for long input; each chunk's left context is the converted text of the
+    /// preceding chunks.
+    pub composing_chunk_len: usize,
     /// Path to dictionary binary file (optional, defaults to data_dir/dict.bin)
     pub dict_path: Option<String>,
     /// Model variant id (optional, defaults to registry default)
@@ -214,7 +220,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.conversion.num_candidates, 9);
         assert!(settings.conversion.use_context);
-        assert_eq!(settings.conversion.max_context_length, 20);
+        assert_eq!(settings.conversion.max_context_length, 10);
     }
 
     #[test]
@@ -273,7 +279,7 @@ num_candidates = 3
         assert_eq!(settings.conversion.num_candidates, 3);
         // Should use default for unspecified values
         assert!(settings.conversion.use_context);
-        assert_eq!(settings.conversion.max_context_length, 20);
+        assert_eq!(settings.conversion.max_context_length, 10);
     }
 
     #[test]

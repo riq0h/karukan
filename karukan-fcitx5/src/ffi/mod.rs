@@ -44,8 +44,8 @@ macro_rules! ffi_mut {
 pub(crate) use ffi_mut;
 pub(crate) use ffi_ref;
 
-use crate::config::Settings;
-use crate::core::engine::{EngineAction, EngineConfig, InputMethodEngine};
+use karukan_im::config::Settings;
+use karukan_im::core::engine::{EngineAction, EngineConfig, InputMethodEngine};
 
 static INIT_LOGGING: Once = Once::new();
 
@@ -113,26 +113,8 @@ pub struct KarukanEngine {
 
 impl KarukanEngine {
     fn new() -> Self {
-        // Load user settings from config.toml, fall back to defaults
         let settings = Settings::load().unwrap_or_default();
-
-        let config = EngineConfig {
-            num_candidates: settings.conversion.num_candidates,
-            display_context_len: 10,
-            max_api_context_len: if settings.conversion.use_context {
-                settings.conversion.max_context_length
-            } else {
-                0
-            },
-            short_input_threshold: settings.conversion.short_input_threshold,
-            beam_width: settings.conversion.beam_width,
-            max_latency_ms: settings.conversion.max_latency_ms,
-            strategy: settings.conversion.strategy,
-            auto_suggest: settings.conversion.auto_suggest,
-            candidate_window_threshold: settings.conversion.candidate_window_threshold,
-            show_aux_text: settings.conversion.show_aux_text,
-            live_conversion: settings.conversion.live_conversion,
-        };
+        let config = EngineConfig::from_settings(&settings);
         let engine = InputMethodEngine::with_config(config);
         Self {
             engine,
