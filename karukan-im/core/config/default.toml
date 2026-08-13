@@ -1,0 +1,61 @@
+# Karukan IME デフォルト設定
+# このファイルは ~/.config/karukan-im/config.toml にコピーして使用してください
+
+[conversion]
+# 変換ストラテジー: adaptive（動的切替）, light（軽量モデルのみ）, main（メインモデルのみ）
+strategy = "adaptive"
+# 変換候補数（Space押下時）
+num_candidates = 9
+# 周辺テキスト（カーソル左側の確定済みテキスト）を変換時のコンテキストとして使用する
+use_context = true
+# 変換API に渡す周辺テキストの最大文字数
+context_chars = 10
+# 一度にAI変換する Chunk の最大文字数。長文を入力しても1キーあたりの変換時間が
+# 伸びないようにするための区切り。詳細は docs/chunking.md を参照。
+chunk_chars = 30
+# ひと続きで変換する Chunk に残せる記号（、。！？など）の数。
+# この数までの記号は区切らずに一緒に変換されるため、「おい、お前だよ」が
+# 読点を入力した時点で「老、」に固定されず、最後までまとめて変換される。
+# 0 にすると記号のたびに区切る。
+chunk_symbols = 1
+
+# Chunk に残せる数字の桁数。既定の 0 は数字をAI変換にかけず、入力された
+# とおりに表示する（AI推論は桁を欠落・重複させることがあるため）。
+# 「だい3かい」のように数字を含めて変換したい場合に増やす。
+# 記号と同じ数え方で、収まる桁だけ残して超えた桁から新しい Chunk になる。
+chunk_digits = 0
+
+# Chunk に残せる英字の数。既定の 0 は英字をAI変換にかけず、入力された
+# とおりに表示する。「Rustで」のように英字と日本語をまとめて変換したい場合に
+# 増やすが、入力途中のローマ字（「わせだd」の d）も一緒にAIに渡るようになる。
+chunk_alphabets = 0
+# 別候補（ビームサーチ）を出す範囲の文字数。Chunk の切れ目に合わせて末尾から
+# まとめるため、実際の範囲はこの値以下、かつ最後の Chunk 以上になる。
+# 数字・記号の Chunk と、自分で入れた区切りが境界になる。
+beam_chars = 30
+# 別候補の本数（ビーム幅）
+beam_width = 3
+# メインモデルの推論がこの時間(ms)を超えたらlight_modelに自動切替(0で無効)
+max_latency_ms = 100
+# Model variant id or GGUF path (uses registry default if unset)
+model = "jinen-v2-small-q5"
+# Beam search model for Space conversion (uses default model only if unset)
+light_model = "jinen-v2-xsmall-q5"
+# 推論スレッド数（0 = 全コア使用）
+n_threads = 4
+# 起動時にライブ変換を有効にする（Ctrl+Shift+L で実行中も切替可能）
+live_conversion = true
+# ユーザー辞書: ~/.local/share/karukan-im/user_dicts/ に辞書ファイルを配置（Mozc TSV or KRKN binary）
+
+[learning]
+# 変換学習を有効にする
+enabled = true
+# 学習エントリの最大数
+max_entries = 10000
+# 学習する変換結果の最大文字数
+max_surface_chars = 50
+
+[display]
+# 補助テキストに詳細（別候補の範囲・推論時間・モデル名・文脈）を表示する。
+# Ctrl+Shift+V でいつでも切り替えられる。
+verbose = false

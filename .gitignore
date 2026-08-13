@@ -38,9 +38,10 @@ data/
 # Tracked data: symbol descriptions / variants for the rewriter
 !karukan-engine/data/
 *.json
+!renovate.json
 *.cache
 
 .fake
 # macOS IME (karukan-macos)
-karukan-macos/.build/
-karukan-macos/out/
+karukan-im/macos/.build/
+karukan-im/macos/out/
