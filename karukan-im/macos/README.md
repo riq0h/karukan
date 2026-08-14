@@ -4,7 +4,7 @@ macOS向けKarukan日本語入力(InputMethodKit + Swift)。
 
 ## アーキテクチャ
 
-サーバー・クライアント構成です。IMEの状態機械・ローマ字変換・かな漢字変換はすべて
+サーバ・クライアント構成です。IMEの状態機械・ローマ字変換・かな漢字変換はすべて
 Rust側(`karukan-im`)にあり、Swift側はInputMethodKitとの橋渡しに徹します。
 
 ```
@@ -71,7 +71,7 @@ killall TextInputMenuAgent
 ### テスト
 
 ```bash
-# Swift + Rustサーバー統合テスト
+# Swift + Rustサーバ統合テスト
 make test
 ```
 
@@ -105,7 +105,7 @@ killall KarukanIME  # 起動中の場合は再起動して反映
 
 - 設定: `~/Library/Application Support/com.karukan.karukan-im/config.toml`
 - システム辞書: `~/Library/Application Support/com.karukan.karukan-im/dict.bin`
-- ユーザー辞書: `~/Library/Application Support/com.karukan.karukan-im/user_dicts/`
+- ユーザ辞書: `~/Library/Application Support/com.karukan.karukan-im/user_dicts/`
 - 学習データ: `~/Library/Application Support/com.karukan.karukan-im/learning.tsv`
 
 設定項目は [docs/configuration.md](../../docs/configuration.md) を、辞書は [docs/dictionary.md](../../docs/dictionary.md) を参照してください。
@@ -113,14 +113,14 @@ killall KarukanIME  # 起動中の場合は再起動して反映
 ## デバッグ
 
 - ログ: `~/Library/Logs/KarukanIME/karukan-ime.log`(Swift側NSLogとRust側tracingの両方)
-- サーバー単体デバッグ: JSON-RPCを直接流せます
+- サーバ単体デバッグ: JSON-RPCを直接流せます
 
   ```bash
   cargo run -p karukan-im --bin karukan-imserver
   {"jsonrpc":"2.0","id":1,"method":"process_key","params":{"keysym":107}}
   ```
 
-- バンドルを組み立てずに開発中のサーバーを使う: `KARUKAN_IMSERVER=/path/to/karukan-imserver`
+- バンドルを組み立てずに開発中のサーバを使う: `KARUKAN_IMSERVER=/path/to/karukan-imserver`
 
 ## 既知の制約
 

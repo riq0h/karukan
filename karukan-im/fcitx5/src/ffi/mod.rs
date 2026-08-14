@@ -195,11 +195,7 @@ impl KarukanEngine {
                     self.commit.dirty = true;
                 }
                 EngineAction::UpdateAuxText(text) => {
-                    if self.settings.conversion.show_aux_text {
-                        self.aux.text = CString::new(text).unwrap_or_default();
-                    } else {
-                        self.aux.text = CString::default();
-                    }
+                    self.aux.text = CString::new(text).unwrap_or_default();
                     self.aux.dirty = true;
                 }
                 EngineAction::HideAuxText => {

@@ -234,11 +234,12 @@ fn test_real_words() {
         ("annninndouhu", "あんにんどうふ"),
     ]);
 
-    // "karukan" (single n at end): trailing 'n' stays pending (ambiguous),
-    // and flushing outputs it as-is
+    // "karukan" (single n at end): trailing 'n' stays pending while typing
+    // (still ambiguous), but the fork's flush turns it into 'ん' so users
+    // don't need to type 'nn'
     assert_eq!(text("karukan"), "かるか");
     assert_eq!(pending("karukan"), "n");
-    assert_eq!(flushed("karukan"), "かるかn");
+    assert_eq!(flushed("karukan"), "かるかん");
 
     // "karukann" (nn at end) -> "かるかん" immediately (nn converts right away)
     assert_eq!(text("karukann"), "かるかん");

@@ -66,6 +66,9 @@ pub(super) struct InputBuffer {
     ///                                ↑ cursor = 2 (between y and 1)
     /// ```
     cursor: usize,
+    /// Fork: selection anchor for Shift+Arrow partial conversion. When set,
+    /// the selection spans `min(anchor, cursor)..max(anchor, cursor)`.
+    selection_anchor: Option<usize>,
 }
 
 impl InputBuffer {
@@ -73,12 +76,48 @@ impl InputBuffer {
         Self {
             elements: Vec::new(),
             cursor: 0,
+            selection_anchor: None,
         }
     }
 
     pub fn clear(&mut self) {
         self.elements.clear();
         self.cursor = 0;
+        self.selection_anchor = None;
+    }
+
+    // --- Fork: selection (Shift+Arrow partial conversion) -----------------
+
+    /// The selected range as `(start, end)` display positions, or `None`
+    /// when nothing is selected (no anchor, or anchor == cursor).
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        self.selection_anchor.and_then(|anchor| {
+            let (start, end) = (anchor.min(self.cursor), anchor.max(self.cursor));
+            (start != end).then_some((start, end))
+        })
+    }
+
+    /// Drop the selection, keeping the caret where it is.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// Move the caret while extending the selection: the anchor is planted
+    /// at the current caret the first time, then stays put.
+    pub fn extend_selection_to(&mut self, pos: usize) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+        self.cursor = pos.min(self.elements.len());
+    }
+
+    /// Replace the whole composition with settled `text`, caret at the end.
+    /// Used to bake a conversion result back into the buffer so the user can
+    /// keep selecting within it.
+    pub fn replace_all_settled(&mut self, text: &str) {
+        self.elements = text.chars().map(Element::Converted).collect();
+        self.cursor = self.elements.len();
+        self.selection_anchor = None;
     }
 
     pub fn is_empty(&self) -> bool {
@@ -246,8 +285,10 @@ impl InputBuffer {
     }
 
     /// Move the caret to a display position (also its element index).
+    /// Plain movement drops any selection (fork).
     pub fn set_cursor(&mut self, pos: usize) {
         self.cursor = pos.min(self.elements.len());
+        self.selection_anchor = None;
     }
 
     // --- Evaluation: views derived from the record ------------------------

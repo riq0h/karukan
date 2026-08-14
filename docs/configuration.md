@@ -87,7 +87,7 @@ CPU高負荷時（Rustビルド中など）にかな漢字変換が遅くなる�
 
 ## Learning Cache
 
-ユーザーが選択した変換結果を記憶し、次回以降の変換で優先表示します。
+ユーザが選択した変換結果を記憶し、次回以降の変換で優先表示します。
 
 - 保存先: `~/.local/share/karukan-im/learning.tsv`（macOS: `~/Library/Application Support/com.karukan.karukan-im/learning.tsv`）
 - 完全一致と前方一致（予測変換）の両方に対応

@@ -97,6 +97,8 @@ pub struct EngineConfig {
     pub strategy: StrategyMode,
     /// Show the detailed aux line (Ctrl+Shift+V toggles it).
     pub verbose: bool,
+    /// Fork: show the aux line at all (`false` hides it entirely)
+    pub show_aux_text: bool,
     /// Whether live conversion is enabled at engine startup
     pub live_conversion: bool,
 }
@@ -122,6 +124,7 @@ impl EngineConfig {
             max_latency_ms: settings.conversion.max_latency_ms,
             strategy: settings.conversion.strategy,
             verbose: settings.display.verbose,
+            show_aux_text: settings.display.show_aux_text,
             live_conversion: settings.conversion.live_conversion,
         }
     }
@@ -142,6 +145,7 @@ impl Default for EngineConfig {
             max_latency_ms: 100,
             strategy: StrategyMode::default(),
             verbose: false,
+            show_aux_text: true,
             live_conversion: false,
         }
     }
@@ -269,6 +273,18 @@ impl LiveConversion {
             shown: false,
         }
     }
+}
+
+/// Fork: state for Shift+Arrow selection-based partial conversion.
+#[derive(Debug, Clone, Default)]
+pub(in crate::core) struct PartialConversion {
+    /// Text on either side of the converted selection, restored into the
+    /// composition when the partial conversion is committed (baked).
+    pub remaining: Option<(String, String)>,
+    /// The composition's hiragana reading before any conversion result was
+    /// baked in. Kept so a later selection over kanji/katakana can be mapped
+    /// back to its reading via character alignment (`karukan_engine::align`).
+    pub original_reading: Option<String>,
 }
 
 /// Dictionary store: system, user, and future cache dictionaries

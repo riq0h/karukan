@@ -13,12 +13,7 @@ const XKB_KEY_ESCAPE: u32 = Keysym::ESCAPE.0;
 const XKB_KEY_SPACE: u32 = Keysym::SPACE.0;
 
 fn test_server() -> ImServer {
-    // Fork: force candidate_window_threshold = 0 so the candidate window
-    // appears on the first Space press (otherwise the fork's default of 3
-    // would suppress show_candidates until the third Space).
-    let mut settings = Settings::default();
-    settings.conversion.candidate_window_threshold = 0;
-    let mut server = ImServer::with_settings(settings);
+    let mut server = ImServer::with_settings(Settings::default());
     // Disable live conversion (Ctrl+Shift+L) so the preedit stays as
     // hiragana; live conversion would require a loaded model.
     request(

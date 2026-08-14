@@ -7,6 +7,7 @@ mod cache;
 mod chunk;
 mod conversion;
 mod cursor;
+mod direct;
 mod display;
 mod filter;
 mod init;
@@ -14,6 +15,7 @@ mod input;
 mod input_buffer;
 mod mode;
 mod model;
+mod partial;
 mod strategy;
 mod types;
 
@@ -32,7 +34,7 @@ use tracing::{debug, trace};
 
 use super::candidate::{Candidate, CandidateList, CandidateSource};
 use super::keycode::{KeyEvent, Keysym};
-use super::preedit::Preedit;
+use super::preedit::{AttributeType, Preedit, PreeditAttribute};
 use super::state::InputState;
 use crate::config::settings::Settings;
 
@@ -144,6 +146,9 @@ pub struct InputMethodEngine {
     input_buf: InputBuffer,
     /// Live conversion state
     live: LiveConversion,
+    /// Fork: Shift+Arrow partial-conversion state (selection remnants and
+    /// the pre-bake reading used for alignment)
+    partial: PartialConversion,
     /// Internal chunking of the composing buffer built by
     /// `chunked_auto_suggest`: the current per-chunk conversions, rebuilt from
     /// scratch on every keystroke (per-chunk model calls are deduplicated by
@@ -188,6 +193,7 @@ impl InputMethodEngine {
             mode: ModeState::default(),
             input_buf: InputBuffer::new(),
             live: LiveConversion::default(),
+            partial: PartialConversion::default(),
             chunks: Vec::new(),
             chunk_breaks: Vec::new(),
             conversion_cache: ConversionCache::default(),
@@ -272,6 +278,7 @@ impl InputMethodEngine {
     pub(super) fn clear_composition(&mut self) {
         self.input_buf.clear();
         self.live.shown = false;
+        self.partial = PartialConversion::default();
         self.chunks.clear();
         self.chunk_breaks.clear();
         self.shown_suggestions = CandidateList::default();

@@ -321,37 +321,14 @@ fn test_alphabet_mode_pure_latin_preserves_live_text() {
 // --- Ctrl+Space full-width space tests ---
 
 #[test]
-fn test_space_commits_fullwidth_space_in_empty() {
+fn test_ctrl_space_inserts_fullwidth_space_in_empty() {
     let mut engine = InputMethodEngine::new();
 
-    // Space in Empty state -> commit full-width space directly
-    let result = engine.process_key(&press_key(Keysym::SPACE));
-    assert!(result.consumed);
-    assert!(matches!(engine.state(), InputState::Empty));
-    let commit_text = result
-        .actions
-        .iter()
-        .find_map(|a| {
-            if let EngineAction::Commit(text) = a {
-                Some(text.clone())
-            } else {
-                None
-            }
-        })
-        .unwrap();
-    assert_eq!(commit_text, "\u{3000}");
-}
-
-#[test]
-fn test_ctrl_space_in_empty_passes_through() {
-    let mut engine = InputMethodEngine::new();
-
-    // Bare Space (no Ctrl) handles full-width space in Hiragana mode.
-    // Ctrl+Space in Empty is no longer intercepted; it falls through to
-    // the OS so the user can use it for app-level shortcuts.
+    // Ctrl+Space in Empty state -> start input with full-width space
     let result = engine.process_key(&press_ctrl(Keysym::SPACE));
-    assert!(!result.consumed);
-    assert!(matches!(engine.state(), InputState::Empty));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "\u{3000}");
 }
 
 #[test]

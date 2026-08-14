@@ -29,7 +29,7 @@ impl InputMethodEngine {
 
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(preedit))
-            .with_action(EngineAction::UpdateAuxText(aux))
+            .with_action(self.aux_action(aux))
     }
 
     /// Toggle live conversion mode via Ctrl+Shift+L.
@@ -42,7 +42,7 @@ impl InputMethodEngine {
         self.live.enabled = !self.live.enabled;
         let mode = if self.live.enabled { "ON" } else { "OFF" };
         debug!("Live conversion toggled: {}", mode);
-        let aux = EngineAction::UpdateAuxText(format!("ライブ変換: {}", mode));
+        let aux = self.aux_action(format!("ライブ変換: {}", mode));
 
         if matches!(self.state, InputState::Composing { .. })
             && self.mode.current() != InputMode::Katakana
@@ -88,6 +88,6 @@ impl InputMethodEngine {
             InputState::Composing { .. } => self.format_aux_suggest(),
             InputState::Empty => format!("詳細表示: {mode}"),
         };
-        EngineResult::consumed().with_action(EngineAction::UpdateAuxText(aux))
+        EngineResult::consumed().with_action(self.aux_action(aux))
     }
 }

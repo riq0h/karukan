@@ -36,7 +36,7 @@ sudo cmake --install build
 fcitx5 -r
 ```
 
-### Build & Install (ユーザーローカル)
+### Build & Install (ユーザローカル)
 
 `~/.local` にインストールします。sudo 不要ですが、`FCITX_ADDON_DIRS` の手動設定が必要です。
 

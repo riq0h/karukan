@@ -87,8 +87,57 @@ impl CandidateBuilder {
 }
 
 impl InputMethodEngine {
+    /// Fork: Tab/Down enter the conversion using the suggestions already on
+    /// screen instead of re-running the model.
+    ///
+    /// The composing window shows learning → model → dictionary candidates
+    /// as they are typed; this promotes exactly that list into the Conversion
+    /// state so Up/Down move through it and Enter commits. Space still runs a
+    /// fresh (beam) conversion, so the two paths stay distinct. Falls back to
+    /// [`Self::start_conversion`] when no suggestions are on screen.
+    pub(super) fn select_auto_suggest(&mut self) -> EngineResult {
+        let suggestions = std::mem::take(&mut self.shown_suggestions);
+        if suggestions.is_empty() {
+            self.shown_suggestions = suggestions;
+            return self.start_conversion(LearningLookup::Use);
+        }
+
+        let reading = self.input_buf.settled_reading(&self.converters.romaji);
+        if reading.is_empty() {
+            return EngineResult::consumed();
+        }
+
+        // The live-conversion text is what the user is looking at, so it has
+        // to stay reachable — put it first when the suggestions don't already
+        // carry it.
+        let live_text = self.live_text_with_pending();
+        self.live.shown = false;
+
+        let mut candidates = suggestions.candidates().to_vec();
+        if !live_text.is_empty()
+            && live_text != reading
+            && !candidates.iter().any(|c| c.text == live_text)
+        {
+            candidates.insert(0, Candidate::with_reading(&live_text, &reading));
+        }
+        // Always keep the raw reading selectable, so Tab never strands the
+        // user in a list without the hiragana they typed.
+        if !candidates.iter().any(|c| c.text == reading) {
+            candidates.push(Candidate::with_reading(&reading, &reading));
+        }
+
+        self.enter_conversion_state(&reading, CandidateList::new(candidates))
+    }
+
     /// Start kanji conversion for the current buffer (Space/Down/Tab).
+    ///
+    /// Fork: with a Shift+Arrow selection active, only the selected span is
+    /// converted; the text on either side is parked in `partial.remaining`
+    /// and restored when the conversion is committed.
     pub(super) fn start_conversion(&mut self, learning: LearningLookup) -> EngineResult {
+        if self.input_buf.selection_range().is_some() {
+            return self.start_partial_conversion(learning);
+        }
         // Resolve the reading without touching the composition, so Esc
         // returns to an editable buffer with the romaji tail still live.
         let reading = self.input_buf.settled_reading(&self.converters.romaji);
@@ -139,7 +188,7 @@ impl InputMethodEngine {
 
     /// Map builder output to the public [`CandidateList`] shown in the
     /// conversion window.
-    fn to_conversion_candidate_list(
+    pub(super) fn to_conversion_candidate_list(
         candidates: Vec<AnnotatedCandidate>,
         reading: &str,
     ) -> CandidateList {
@@ -516,6 +565,20 @@ impl InputMethodEngine {
         match key.keysym {
             Keysym::RETURN => self.commit_conversion(),
             Keysym::ESCAPE => self.cancel_conversion(),
+            // Fork: F6-F10 abandon the candidate list and commit the reading
+            // in a fixed form, same as from Composing.
+            Keysym::F6 => self.direct_convert_from_conversion(Self::direct_convert_hiragana),
+            Keysym::F7 => self.direct_convert_from_conversion(Self::direct_convert_katakana),
+            Keysym::F8 => self.direct_convert_from_conversion(Self::direct_convert_half_katakana),
+            Keysym::F9 => self.direct_convert_from_conversion(Self::direct_convert_fullwidth),
+            Keysym::F10 => self.direct_convert_from_conversion(Self::direct_convert_halfwidth),
+            // Fork: Shift+Arrow bakes the current candidate into the
+            // composition and starts a selection there, so the user can
+            // re-convert just a portion of an already-converted result.
+            Keysym::LEFT if shift_active => self.conversion_to_selection(false),
+            Keysym::RIGHT if shift_active => self.conversion_to_selection(true),
+            Keysym::HOME if shift_active => self.conversion_to_selection_home(),
+            Keysym::END if shift_active => self.conversion_to_selection_end(),
             // Tab stays next-candidate and Shift+Tab (ISO_Left_Tab on
             // X11) prev-candidate for mozc-compatible muscle memory.
             Keysym::ISO_LEFT_TAB => self.prev_candidate(),
@@ -678,7 +741,11 @@ impl InputMethodEngine {
         self.end_composition();
     }
 
-    /// Commit the current conversion
+    /// Commit the current conversion.
+    ///
+    /// Fork: with a partial conversion in flight the result is baked back
+    /// into the composition rather than committed, so other spans can be
+    /// converted before the whole text is sent to the application.
     fn commit_conversion(&mut self) -> EngineResult {
         let Some((text, reading)) = self.selected_conversion_info() else {
             return EngineResult::not_consumed();
@@ -686,6 +753,14 @@ impl InputMethodEngine {
 
         if text.is_empty() {
             return EngineResult::consumed();
+        }
+
+        if self.has_partial_conversion() {
+            // Learn the span on its own, then fold it into the composition.
+            if let Some(reading) = &reading {
+                self.record_learning(reading, &text);
+            }
+            return self.bake_partial_conversion(&text);
         }
 
         self.finish_conversion(&text, &reading);

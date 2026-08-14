@@ -6,16 +6,19 @@ use super::*;
 use crate::core::keycode::KeyModifiers;
 
 mod alphabet;
+mod aux_text;
 mod basic;
 mod candidates;
 mod chunks;
 mod conversion;
 mod cursor;
+mod direct;
 mod emoji;
 mod katakana;
 mod learning;
 mod live_conversion;
 mod mode_toggle;
+mod partial;
 mod passthrough;
 mod pending_romaji;
 mod predictive;
@@ -79,6 +82,11 @@ fn press_shift(ch: char) -> KeyEvent {
         KeyModifiers::new().with_shift(true),
         true,
     )
+}
+
+/// Shift + a non-character key (Shift+Space, Shift+Arrow, …).
+fn press_shift_key(keysym: Keysym) -> KeyEvent {
+    KeyEvent::new(keysym, KeyModifiers::new().with_shift(true), true)
 }
 
 fn press_ctrl(keysym: Keysym) -> KeyEvent {

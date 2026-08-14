@@ -32,6 +32,10 @@ pub struct DisplaySettings {
     /// which part the alternatives cover, inference timing, the model that
     /// ran, and the context handed to it.
     pub verbose: bool,
+    /// Fork: show the aux line at all. `false` hides it entirely — mode
+    /// indicator, reading, and everything `verbose` would add — leaving only
+    /// the preedit and the candidate window on screen.
+    pub show_aux_text: bool,
 }
 
 /// Conversion strategy mode
@@ -97,12 +101,6 @@ pub struct ConversionSettings {
     pub max_latency_ms: u64,
     /// Number of threads for llama.cpp inference (0 = all cores, llama.cpp default)
     pub n_threads: u32,
-    /// Show auto-suggest candidates while typing (false = show only on Space conversion)
-    pub auto_suggest: bool,
-    /// Number of Space presses before showing the candidate window (0 = always show)
-    pub candidate_window_threshold: u32,
-    /// Show auxiliary text (inference time, dictionary source, etc.)
-    pub show_aux_text: bool,
     /// Enable live conversion at startup (Ctrl+Shift+L still toggles at runtime)
     pub live_conversion: bool,
 }

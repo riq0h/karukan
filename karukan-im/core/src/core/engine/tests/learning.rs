@@ -42,13 +42,42 @@ fn build_candidates_omits_learning_when_skipped() {
 }
 
 #[test]
-fn tab_key_skips_learning_in_composing() {
-    // End-to-end: type the reading, press Tab → learned candidate is gone.
+fn shift_space_skips_learning_in_composing() {
+    // Fork: skip-learning conversion is bound to Shift+Space (upstream uses
+    // Tab, which the fork keeps for suggestion selection).
     let mut engine = engine_with_learned("あい", "藍");
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     assert_eq!(engine.input_buf.reading(), "あい");
+
+    let result = engine.process_key(&press_shift_key(Keysym::SPACE));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let texts: Vec<String> = engine
+        .state()
+        .candidates()
+        .unwrap()
+        .candidates()
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+    assert!(
+        !texts.contains(&"藍".to_string()),
+        "Shift+Space must skip the learned `藍` candidate, got {:?}",
+        texts,
+    );
+}
+
+#[test]
+fn tab_selects_from_suggestions_with_learning() {
+    // Tab promotes the on-screen suggestions (which include the learned
+    // candidate) into the conversion — the opposite of Shift+Space.
+    let mut engine = engine_with_learned("あい", "藍");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
 
     let result = engine.process_key(&press_key(Keysym::TAB));
     assert!(result.consumed);
@@ -63,10 +92,12 @@ fn tab_key_skips_learning_in_composing() {
         .map(|c| c.text.clone())
         .collect();
     assert!(
-        !texts.contains(&"藍".to_string()),
-        "Tab must skip the learned `藍` candidate, got {:?}",
+        texts.contains(&"藍".to_string()),
+        "Tab must keep the learned `藍` candidate, got {:?}",
         texts,
     );
+    // The raw reading is always reachable
+    assert!(texts.contains(&"あい".to_string()), "got {:?}", texts);
 }
 
 #[test]

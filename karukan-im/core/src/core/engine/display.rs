@@ -53,6 +53,22 @@ impl InputMethodEngine {
         };
         let mut preedit = Preedit::with_text_underlined(&display);
         preedit.set_caret(caret);
+
+        // Fork: highlight the Shift+Arrow selection so the user sees the
+        // span Space will convert.
+        if let Some((start, end)) = self.input_buf.selection_range() {
+            let len = display.chars().count();
+            let (start, end) = (start.min(len), end.min(len));
+            let mut attrs = Vec::new();
+            if start > 0 {
+                attrs.push(PreeditAttribute::underline(0, start));
+            }
+            attrs.push(PreeditAttribute::new(start, end, AttributeType::Highlight));
+            if end < len {
+                attrs.push(PreeditAttribute::underline(end, len));
+            }
+            preedit.set_attributes(attrs);
+        }
         preedit
     }
 
@@ -209,8 +225,22 @@ impl InputMethodEngine {
         Some(format!("{BEAM_SPAN_LABEL} {span} {fill}"))
     }
 
+    /// Fork: build the action that puts `text` on the aux line, honouring
+    /// `show_aux_text`. With the aux line disabled every path emits
+    /// `HideAuxText` instead, so mode/toggle notifications stay hidden too.
+    pub(super) fn aux_action(&self, text: String) -> EngineAction {
+        if self.config.show_aux_text {
+            EngineAction::UpdateAuxText(text)
+        } else {
+            EngineAction::HideAuxText
+        }
+    }
+
     /// Format aux text for composing input mode
     pub(super) fn format_aux_composing(&self) -> String {
+        if !self.config.show_aux_text {
+            return String::new();
+        }
         let indicator = self.mode_indicator();
         let base = self.aux_reading();
         let reading = if base.is_empty() {
@@ -245,6 +275,9 @@ impl InputMethodEngine {
         reading: &str,
         candidates: Option<&CandidateList>,
     ) -> String {
+        if !self.config.show_aux_text {
+            return String::new();
+        }
         let page_info = candidates
             .filter(|c| c.total_pages() > 1)
             .map(|c| format!(" ({}/{})", c.current_page() + 1, c.total_pages()))
@@ -293,6 +326,9 @@ impl InputMethodEngine {
     /// Format aux text for auto-suggest mode
     /// Timing shows inference_ms/process_key_ms (process_key_ms is from previous keystroke)
     pub(super) fn format_aux_suggest(&self) -> String {
+        if !self.config.show_aux_text {
+            return String::new();
+        }
         // Single context block: the lctx is the current chunk's actual left
         // context (see `display_context_chunked`), so there is no separate
         // per-chunk lctx fragment widening the candidate window.

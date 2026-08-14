@@ -40,6 +40,13 @@ impl Keysym {
     pub const HYPER_L: Keysym = Keysym(0xffed);
     pub const HYPER_R: Keysym = Keysym(0xffee);
 
+    // Function keys (fork: F6-F10 direct conversion, MS-IME/ATOK style)
+    pub const F6: Keysym = Keysym(0xffc3);
+    pub const F7: Keysym = Keysym(0xffc4);
+    pub const F8: Keysym = Keysym(0xffc5);
+    pub const F9: Keysym = Keysym(0xffc6);
+    pub const F10: Keysym = Keysym(0xffc7);
+
     // Japanese keyboard keys (JIS layout)
     /// 変換 key (XK_Henkan_Mode; XK_Henkan is a non-deprecated alias for the
     /// same value). Delivered by fcitx5 for the key right of Space on JIS

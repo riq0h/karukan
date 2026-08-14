@@ -1,6 +1,6 @@
 # Dictionary
 
-karukan はモデル推論に加えて、システム辞書・ユーザー辞書からの変換候補を提供します。辞書の構築・管理ツールについては [karukan-cli の README](../karukan-cli/README.md) を参照してください。
+karukan はモデル推論に加えて、システム辞書・ユーザ辞書からの変換候補を提供します。辞書の構築・管理ツールについては [karukan-cli の README](../karukan-cli/README.md) を参照してください。
 
 > [!NOTE]
 > モデル推論だけでは語彙が限られるため、システム辞書の併用を強く推奨します。システム辞書はIMEに同梱されていないため、別途インストールが必要です。
@@ -33,16 +33,16 @@ cp dict.bin ~/Library/"Application Support"/com.karukan.karukan-im/
 
 ## User Dictionary
 
-ユーザー辞書ディレクトリにファイルを配置すると、ユーザー辞書として読み込まれます。対応形式と登録方法の詳細は [user-dictionary.md](user-dictionary.md) を参照してください。
+ユーザ辞書ディレクトリにファイルを配置すると、ユーザ辞書として読み込まれます。対応形式と登録方法の詳細は [user-dictionary.md](user-dictionary.md) を参照してください。
 
 - デフォルトパス: `~/.local/share/karukan-im/user_dicts/`（macOS: `~/Library/Application Support/com.karukan.karukan-im/user_dicts/`）
 - ディレクトリ内のファイルはすべて自動で読み込み（KRKNバイナリ・Mozc TSV を自動判定）
-- ディレクトリが存在しない場合はユーザー辞書なしで動作
+- ディレクトリが存在しない場合はユーザ辞書なしで動作
 
 ## 変換候補の優先順位
 
 1. 📝 学習キャッシュ
-2. 👤 ユーザー辞書
+2. 👤 ユーザ辞書
 3. 🤖 モデル推論
 4. 📚 システム辞書（スコア順）
 5. ひらがな / カタカナ

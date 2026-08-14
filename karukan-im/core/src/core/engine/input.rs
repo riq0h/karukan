@@ -252,12 +252,28 @@ impl InputMethodEngine {
             Keysym::ESCAPE => self.cancel_composing(),
             Keysym::BACKSPACE => self.backspace_composing(),
             Keysym::DELETE => self.delete_composing(),
+            // Fork: F6-F10 commit the composition in a fixed form without
+            // going through the model (MS-IME / ATOK style).
+            Keysym::F6 => self.direct_convert_hiragana(),
+            Keysym::F7 => self.direct_convert_katakana(),
+            Keysym::F8 => self.direct_convert_half_katakana(),
+            Keysym::F9 => self.direct_convert_fullwidth(),
+            Keysym::F10 => self.direct_convert_halfwidth(),
             Keysym::SPACE if self.mode.current() == InputMode::Alphabet => self.input_char(' '),
-            // Tab triggers conversion that bypasses the learning cache, so users
-            // can escape stale or unwanted learned entries (mozc binds Tab to a
-            // different conversion path — PredictAndConvert — in the same spirit).
-            Keysym::TAB => self.start_conversion(LearningLookup::Skip),
-            Keysym::SPACE | Keysym::DOWN => self.start_conversion(LearningLookup::Use),
+            // Fork: Shift+Space converts while bypassing the learning cache,
+            // so users can escape stale or unwanted learned entries. (Upstream
+            // binds this to Tab; the fork keeps Tab for suggestion selection.)
+            Keysym::SPACE if shift_active => self.start_conversion(LearningLookup::Skip),
+            Keysym::SPACE => self.start_conversion(LearningLookup::Use),
+            // Fork: Tab/Down promote the suggestions already on screen into
+            // the conversion instead of re-running the model.
+            Keysym::TAB | Keysym::DOWN => self.select_auto_suggest(),
+            // Fork: Shift+Arrow selects a span for partial conversion
+            // (must precede the plain arrow arms).
+            Keysym::LEFT if shift_active => self.shift_select_left(),
+            Keysym::RIGHT if shift_active => self.shift_select_right(),
+            Keysym::HOME if shift_active => self.shift_select_home(),
+            Keysym::END if shift_active => self.shift_select_end(),
             Keysym::LEFT => self.move_caret_left(),
             Keysym::RIGHT => self.move_caret_right(),
             Keysym::HOME => self.move_caret_home(),
@@ -382,7 +398,10 @@ impl InputMethodEngine {
                 .with_action(EngineAction::HideAuxText);
         }
 
-        self.record_learning(&reading, &text);
+        // Fork: after partial conversion the buffer holds baked kanji, so
+        // learn against the original hiragana instead (full reading → result).
+        let learning_reading = self.take_learning_reading(reading);
+        self.record_learning(&learning_reading, &text);
         self.end_composition();
 
         // HideCandidates is required here: the auto-suggest/live-conversion

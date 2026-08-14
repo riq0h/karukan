@@ -49,12 +49,30 @@ impl RomajiConverter {
     }
 
     /// Force-convert leftover pending input (`ltu` → っ); characters with no
-    /// rule pass through literally (a trailing `n` stays `n`).
+    /// rule pass through literally.
+    ///
+    /// **Fork behavior**: a trailing lone `n` (i.e. `n` followed only by
+    /// non-vowel/y characters, or standing alone at end) is converted to
+    /// `ん` so users don't need to type `nn`. Explicit `nn` and `n'` still
+    /// work as-is.
     pub fn flush_pending(&self, pending: &str) -> String {
         let mut buffer = pending.to_string();
         let mut result = String::new();
 
         while !buffer.is_empty() {
+            // Fork: lone leading `n` becomes `ん` on flush. Only when the
+            // next character (if any) is not one that would extend `n` into
+            // a rule (`n` + vowel/y/'/n forms the na-row, `nya`, `n'`, `nn`).
+            if buffer.starts_with('n') {
+                let next = buffer.chars().nth(1);
+                let extends = matches!(next, Some('a' | 'i' | 'u' | 'e' | 'o' | 'y' | '\'' | 'n'));
+                if !extends {
+                    result.push('ん');
+                    buffer.drain(..'n'.len_utf8());
+                    continue;
+                }
+            }
+
             let search = self.trie.search_longest(&buffer);
             if let Some(h) = search.output {
                 result.push_str(h);
@@ -318,7 +336,22 @@ mod tests {
         assert_eq!(c.flush_pending("k"), "k");
         assert_eq!(c.flush_pending("ltu"), "っ");
         assert_eq!(c.convert_flush("k"), "k");
-        assert_eq!(c.convert_flush("kan"), "かn");
+        // Fork: trailing lone `n` becomes `ん` so `karukan` → `かるかん`
+        assert_eq!(c.convert_flush("kan"), "かん");
+        assert_eq!(c.convert_flush("karukan"), "かるかん");
+    }
+
+    #[test]
+    fn test_flush_trailing_n() {
+        let c = RomajiConverter::new();
+        // Lone trailing `n` → `ん`
+        assert_eq!(c.flush_pending("n"), "ん");
+        // `nn` still produces `ん` (existing rule)
+        assert_eq!(c.flush_pending("nn"), "ん");
+        // `n'` still produces `ん` (existing rule)
+        assert_eq!(c.flush_pending("n'"), "ん");
+        // `nk` → `ん` + passthrough `k` (n before consonant)
+        assert_eq!(c.flush_pending("nk"), "んk");
     }
 
     #[test]

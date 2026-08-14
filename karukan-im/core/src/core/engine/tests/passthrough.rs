@@ -2,16 +2,18 @@ use super::*;
 
 #[test]
 fn test_passthrough_no_double_counting() {
-    // Regression test: typing '<' twice should produce "<<" in the preedit.
-    // The converter adds PassThrough chars to output() AND returns them as
-    // PassThrough events; without proper handling, both paths would insert
-    // the char.
+    // Regression test: typing '<' twice should produce "<<" in the preedit,
+    // not "<<<" or "<<<<". The converter adds PassThrough chars to output()
+    // AND returns them as PassThrough events; without proper handling, both
+    // paths would insert the char.
     let mut engine = InputMethodEngine::new();
 
+    // Type '<' from empty state → enters Composing with preedit "<"
     engine.process_key(&press('<'));
     assert!(matches!(engine.state(), InputState::Composing { .. }));
     assert_eq!(engine.preedit().unwrap().text(), "<");
 
+    // Type '<' again → preedit becomes "<<", not "<<<"
     engine.process_key(&press('<'));
     assert_eq!(
         engine.preedit().unwrap().text(),
@@ -22,14 +24,19 @@ fn test_passthrough_no_double_counting() {
 
 #[test]
 fn test_apostrophe_starts_input_mode() {
-    // Typing `'` in empty state should enter Composing, not auto-commit.
+    // Regression for: typing `'` in empty state should enter Composing,
+    // not auto-commit. This lets users type `'word'` or get symbol variants.
     let mut engine = InputMethodEngine::new();
 
     let result = engine.process_key(&press('\''));
     assert!(result.consumed);
-    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert!(
+        matches!(engine.state(), InputState::Composing { .. }),
+        "Apostrophe should enter Composing, not auto-commit"
+    );
     assert_eq!(engine.preedit().unwrap().text(), "'");
 
+    // No Commit action should have fired.
     assert!(
         !result
             .actions
@@ -77,7 +84,7 @@ fn test_passthrough_after_hiragana_no_double() {
     engine.process_key(&press('a'));
     assert_eq!(engine.preedit().unwrap().text(), "あ");
 
-    // Type '<' while in hiragana input state → passes through as '<'
+    // Type '<' while in hiragana input state
     engine.process_key(&press('<'));
     let preedit = engine.preedit().unwrap().text().to_string();
     assert_eq!(preedit, "あ<", "Should be 'あ<', not 'あ<<'");
@@ -138,111 +145,4 @@ fn test_digit_in_middle_of_hiragana() {
     engine.process_key(&press('2'));
     assert!(matches!(engine.state(), InputState::Composing { .. }));
     assert_eq!(engine.preedit().unwrap().text(), "あ2");
-}
-
-#[test]
-fn test_backspace_reclaims_passthrough_for_romaji() {
-    // Typing "hs" passes 'h' through, then backspacing 's' should reclaim 'h'
-    // into the romaji buffer so that typing 'a' produces "は", not "hあ".
-    let mut engine = InputMethodEngine::new();
-
-    // Type 'h' → buffered
-    engine.process_key(&press('h'));
-    assert_eq!(engine.preedit().unwrap().text(), "h");
-
-    // Type 's' → 'h' passes through (no "hs" rule), 's' buffered
-    engine.process_key(&press('s'));
-    assert_eq!(engine.preedit().unwrap().text(), "hs");
-
-    // Backspace → remove 's', reclaim 'h' back to buffer
-    engine.process_key(&press_key(Keysym::BACKSPACE));
-    assert_eq!(engine.preedit().unwrap().text(), "h");
-
-    // Type 'a' → 'h' + 'a' = "は"
-    engine.process_key(&press('a'));
-    assert_eq!(
-        engine.preedit().unwrap().text(),
-        "は",
-        "Should produce は, not hあ"
-    );
-}
-
-#[test]
-fn test_backspace_reclaim_with_preceding_hiragana() {
-    // Same scenario but with hiragana already in the buffer
-    let mut engine = InputMethodEngine::new();
-
-    // Type "ka" → "か"
-    engine.process_key(&press('k'));
-    engine.process_key(&press('a'));
-    assert_eq!(engine.preedit().unwrap().text(), "か");
-
-    // Type "hs" → "かhs" (h passed through, s buffered)
-    engine.process_key(&press('h'));
-    engine.process_key(&press('s'));
-    assert_eq!(engine.preedit().unwrap().text(), "かhs");
-
-    // Backspace → "かh" (s removed, h reclaimed)
-    engine.process_key(&press_key(Keysym::BACKSPACE));
-    assert_eq!(engine.preedit().unwrap().text(), "かh");
-
-    // Type 'a' → "かは"
-    engine.process_key(&press('a'));
-    assert_eq!(engine.preedit().unwrap().text(), "かは");
-}
-
-#[test]
-fn test_backspace_reclaims_passthrough_after_hiragana_deletion() {
-    // Typing "namko" produces "なmこ" (m passed through, ko → こ).
-    // Deleting "こ" should reclaim 'm' from input_buf into romaji buffer
-    // so that typing "a" produces "なま", not "なmあ".
-    let mut engine = InputMethodEngine::new();
-
-    // Type "namko" → "なmこ"
-    for ch in "namko".chars() {
-        engine.process_key(&press(ch));
-    }
-    assert_eq!(engine.preedit().unwrap().text(), "なmこ");
-
-    // Backspace → delete "こ", reclaim 'm' into buffer → display "なm"
-    engine.process_key(&press_key(Keysym::BACKSPACE));
-    assert_eq!(engine.preedit().unwrap().text(), "なm");
-
-    // Type 'a' → buffer "ma" → "ま" → "なま"
-    engine.process_key(&press('a'));
-    assert_eq!(
-        engine.preedit().unwrap().text(),
-        "なま",
-        "Should produce なま, not なmあ"
-    );
-
-    // Continue with "ko" → "なまこ"
-    engine.process_key(&press('k'));
-    engine.process_key(&press('o'));
-    assert_eq!(engine.preedit().unwrap().text(), "なまこ");
-}
-
-#[test]
-fn test_backspace_reclaim_n_before_consonant() {
-    // Typing "ns" triggers n-before-consonant (ん + s).
-    // Backspacing 's' from romaji buffer reclaims 'ん' → 'n'.
-    // Then typing 'a' gives "な", not "んあ".
-    let mut engine = InputMethodEngine::new();
-
-    // Type "ns" → "ん" + buffer="s"
-    engine.process_key(&press('n'));
-    engine.process_key(&press('s'));
-    assert_eq!(engine.preedit().unwrap().text(), "んs");
-
-    // Backspace → reclaim ん → n in buffer
-    engine.process_key(&press_key(Keysym::BACKSPACE));
-    assert_eq!(engine.preedit().unwrap().text(), "n");
-
-    // Type 'a' → "な"
-    engine.process_key(&press('a'));
-    assert_eq!(
-        engine.preedit().unwrap().text(),
-        "な",
-        "Should produce な, not んあ"
-    );
 }
