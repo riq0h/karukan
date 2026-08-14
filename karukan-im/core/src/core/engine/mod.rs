@@ -511,8 +511,13 @@ impl InputMethodEngine {
             return self.toggle_live_conversion();
         }
 
-        // Ctrl+Shift+V: toggle the verbose aux line (works in all states)
-        if key.modifiers.control_key
+        // Ctrl+Shift+V: toggle the verbose aux line (works in all states).
+        //
+        // Fork: skipped entirely with the aux line disabled — the toggle
+        // would have nothing to show, and swallowing the chord would break
+        // "paste as plain text" in terminals and browsers.
+        if self.config.show_aux_text
+            && key.modifiers.control_key
             && key.modifiers.shift_key
             && (key.keysym == Keysym::KEY_V || key.keysym == Keysym::KEY_V_UPPER)
         {

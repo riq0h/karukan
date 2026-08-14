@@ -71,9 +71,21 @@ fn live_conversion_toggle_reports_by_default() {
 }
 
 #[test]
-fn verbose_toggle_stays_hidden_when_disabled() {
+fn verbose_toggle_passes_through_when_aux_disabled() {
+    // With no aux line to show, Ctrl+Shift+V must reach the application
+    // (it is "paste as plain text" in terminals and browsers).
     let mut e = engine_without_aux();
     let result = e.process_key(&press_ctrl_shift(Keysym::KEY_V));
-    assert!(has_hide_aux(&result));
+    assert!(!result.consumed, "Ctrl+Shift+V must not be swallowed");
     assert!(aux_of(&result).is_none());
+}
+
+#[test]
+fn verbose_toggle_is_consumed_by_default() {
+    let mut e = InputMethodEngine::new();
+    e.converters.kanji = None;
+    let result = e.process_key(&press_ctrl_shift(Keysym::KEY_V));
+    assert!(result.consumed);
+    let aux = aux_of(&result).expect("toggle should report its new state");
+    assert!(aux.contains("詳細表示"), "got {aux}");
 }

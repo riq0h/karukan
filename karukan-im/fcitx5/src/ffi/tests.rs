@@ -33,8 +33,11 @@ struct TestEngine(*mut KarukanEngine);
 
 impl TestEngine {
     fn new() -> Self {
-        let ptr = karukan_engine_new();
-        assert!(!ptr.is_null());
+        // Built from `Settings::default()`, never the developer's
+        // config.toml — otherwise a local setting (e.g. the fork's
+        // `show_aux_text = false`, which turns the Ctrl+Shift+V chord into
+        // a passthrough) would change what these tests observe.
+        let ptr = Box::into_raw(Box::new(KarukanEngine::with_settings(Settings::default())));
         // The context tests read the aux line, which only carries the
         // debug details in verbose mode (Ctrl+Shift+V).
         karukan_engine_process_key(ptr, XKB_KEY_V, MOD_CTRL_SHIFT, 0);

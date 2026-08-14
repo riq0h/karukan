@@ -136,7 +136,9 @@ show_aux_text = false
 | `verbose = false` | `[あ] かんじ`                                         |
 | `show_aux_text = false` | （何も表示しない）                              |
 
-- 対象: `karukan-im/core/src/config/settings.rs`, `core/engine/display.rs`, `mode.rs`
+`show_aux_text = false` のときは verbose 切替（Ctrl+Shift+V）も無効になり、キーはアプリケーションへ素通しします。表示するものがないトグルのためにターミナルやブラウザの「書式なしで貼り付け」を潰さないためです。
+
+- 対象: `karukan-im/core/src/config/settings.rs`, `core/engine/display.rs`, `mode.rs`, `mod.rs`
 
 ### 辞書の拡張
 
