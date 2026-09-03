@@ -23,12 +23,12 @@ use super::*;
 impl InputMethodEngine {
     /// F6: commit as hiragana.
     pub(super) fn direct_convert_hiragana(&mut self) -> EngineResult {
-        self.commit_direct(|reading| karukan_engine::katakana_to_hiragana(reading))
+        self.commit_direct(karukan_engine::katakana_to_hiragana)
     }
 
     /// F7: commit as full-width katakana.
     pub(super) fn direct_convert_katakana(&mut self) -> EngineResult {
-        self.commit_direct(|reading| karukan_engine::hiragana_to_katakana(reading))
+        self.commit_direct(karukan_engine::hiragana_to_katakana)
     }
 
     /// F8: commit as half-width katakana.

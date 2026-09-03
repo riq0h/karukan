@@ -74,7 +74,7 @@ pub fn align(surface: &str, reading: &str) -> Vec<Segment> {
                 let c_norm = katakana_to_hiragana(&c_str);
                 let c_norm_ch = c_norm.chars().next().unwrap_or(surf_chars[i]);
                 // Check if this kana appears in the remaining reading (anchor candidate).
-                if read_chars[j..].iter().any(|&c| c == c_norm_ch) {
+                if read_chars[j..].contains(&c_norm_ch) {
                     break;
                 }
             }
