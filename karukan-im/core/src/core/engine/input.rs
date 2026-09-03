@@ -89,9 +89,16 @@ impl InputMethodEngine {
     fn suggest_result(&mut self, candidates: Vec<String>, reading: &str) -> EngineResult {
         let preedit = self.set_composing_state();
         let mut all_candidates = self.lookup_learning_candidates(reading);
+        // Tagged as the model's, which is what makes the width setting reach
+        // them: `settle_candidates` settles the model's answers and leaves
+        // every other source at the width someone chose. Untagged, the
+        // preedit showed 「あ？」 while the list under it showed 「あ?」.
         let model_candidates: Vec<Candidate> = candidates
             .into_iter()
-            .map(|s| Candidate::with_reading(s, reading))
+            .map(|s| Candidate {
+                source: Some(CandidateSource::Model),
+                ..Candidate::with_reading(s, reading)
+            })
             .collect();
         append_candidates_dedup(&mut all_candidates, model_candidates);
         append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(reading));

@@ -372,4 +372,23 @@ fn model_output_spaces_follow_the_space_setting() {
     assert_eq!(committed(&result).as_deref(), Some("亜　井"));
 }
 
+#[test]
+fn the_suggestion_list_settles_the_models_answer_too() {
+    // The composing suggestion window shows the model's answer while live
+    // conversion is running. That answer is model output like any other, so
+    // the width has to reach it — otherwise the preedit shows 「亜？」 and
+    // the list directly under it shows 「亜?」.
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        width: WidthRules {
+            ascii_symbol: Width::Full,
+            ..WidthRules::default()
+        },
+        live_conversion: true,
+        ..EngineConfig::default()
+    });
+    seed_model_cache(&mut engine, "ア？", "", &["亜?"]);
 
+    let result = type_keys(&mut engine, "a?");
+    assert_eq!(shown_preedit(&result).as_deref(), Some("亜？"));
+    assert_eq!(shown_candidates(&result), vec!["亜？".to_string()]);
+}
