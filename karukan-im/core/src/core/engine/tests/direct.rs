@@ -29,10 +29,7 @@ fn f7_commits_full_katakana() {
 
 #[test]
 fn f8_commits_half_katakana() {
-    assert_eq!(
-        direct_convert("kana", Keysym::F8),
-        Some("ｶﾅ".to_string())
-    );
+    assert_eq!(direct_convert("kana", Keysym::F8), Some("ｶﾅ".to_string()));
 }
 
 #[test]

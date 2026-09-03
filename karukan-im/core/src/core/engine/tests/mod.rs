@@ -26,6 +26,7 @@ mod rewriter;
 mod source_filter;
 mod strategy;
 mod surrounding;
+mod width;
 
 /// Engine seeded with a learning entry `reading → surface`, no kanji model.
 /// Bypasses `init.rs` (which gates learning on settings + file I/O) and
@@ -128,6 +129,14 @@ fn last_aux_text(result: &EngineResult) -> Option<String> {
     result.actions.iter().rev().find_map(|a| match a {
         EngineAction::UpdateAuxText(text) => Some(text.clone()),
         _ => None,
+    })
+}
+
+/// Engine whose Space setting is the full-width one (the default is half).
+fn fullwidth_space_engine() -> InputMethodEngine {
+    InputMethodEngine::with_config(EngineConfig {
+        space: crate::config::settings::SpaceStyle::Full,
+        ..EngineConfig::default()
     })
 }
 

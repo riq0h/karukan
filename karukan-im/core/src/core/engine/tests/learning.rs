@@ -42,16 +42,17 @@ fn build_candidates_omits_learning_when_skipped() {
 }
 
 #[test]
-fn shift_space_skips_learning_in_composing() {
-    // Fork: skip-learning conversion is bound to Shift+Space (upstream uses
-    // Tab, which the fork keeps for suggestion selection).
+fn ctrl_space_skips_learning_in_composing() {
+    // Fork: skip-learning conversion is bound to Ctrl+Space. Upstream binds
+    // it to Tab (which the fork uses for suggestion selection), and
+    // Shift+Space inserts a space mid-composition.
     let mut engine = engine_with_learned("あい", "藍");
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     assert_eq!(engine.input_buf.reading(), "あい");
 
-    let result = engine.process_key(&press_shift_key(Keysym::SPACE));
+    let result = engine.process_key(&press_ctrl(Keysym::SPACE));
     assert!(result.consumed);
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
@@ -65,15 +66,29 @@ fn shift_space_skips_learning_in_composing() {
         .collect();
     assert!(
         !texts.contains(&"藍".to_string()),
-        "Shift+Space must skip the learned `藍` candidate, got {:?}",
+        "Ctrl+Space must skip the learned `藍` candidate, got {:?}",
         texts,
     );
 }
 
 #[test]
+fn shift_space_inserts_a_space_not_a_conversion() {
+    // Fork sanity check: Shift+Space keeps upstream's meaning (insert the
+    // configured space) rather than starting a learning-free conversion.
+    let mut engine = engine_with_learned("あい", "藍");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_shift_key(Keysym::SPACE));
+
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.reading(), "あい ");
+}
+
+#[test]
 fn tab_selects_from_suggestions_with_learning() {
     // Tab promotes the on-screen suggestions (which include the learned
-    // candidate) into the conversion — the opposite of Shift+Space.
+    // candidate) into the conversion — the opposite of Ctrl+Space.
     let mut engine = engine_with_learned("あい", "藍");
 
     engine.process_key(&press('a'));

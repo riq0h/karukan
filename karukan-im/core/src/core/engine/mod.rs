@@ -21,6 +21,8 @@ mod types;
 
 pub use types::*;
 
+use std::collections::HashSet;
+
 use cache::{ConversionCache, ConversionCacheKey, ModelRole};
 use input_buffer::InputBuffer;
 
@@ -28,7 +30,8 @@ use input_buffer::InputBuffer;
 mod tests;
 
 use karukan_engine::{
-    Dictionary, KanaKanjiConverter, LearningCache, LearningConfig, RewriterChain, RomajiConverter,
+    Dictionary, EmojiRewriter, KanaKanjiConverter, LearningCache, LearningConfig, RewriteOutput,
+    Rewriter, RewriterChain, RomajiConverter,
 };
 use tracing::{debug, trace};
 
@@ -36,7 +39,7 @@ use super::candidate::{Candidate, CandidateList, CandidateSource};
 use super::keycode::{KeyEvent, Keysym};
 use super::preedit::{AttributeType, Preedit, PreeditAttribute};
 use super::state::InputState;
-use crate::config::settings::Settings;
+use crate::config::settings::{Settings, SpaceStyle};
 
 /// A conversion candidate tagged with its source and an optional description.
 ///
@@ -174,6 +177,11 @@ pub struct InputMethodEngine {
     dicts: Dictionaries,
     /// Learning cache (user conversion history)
     learning: Option<LearningCache>,
+    /// Receiver for the background model-loading thread: model resolution
+    /// can block on the network, so it never runs on the key-event thread.
+    /// Drained by `poll_loaded_models` at the top of `process_key`; until
+    /// then (or if loading failed) the engine runs dictionary/kana-only.
+    model_loading: Option<std::sync::mpsc::Receiver<init::LoadedConverters>>,
 }
 
 impl InputMethodEngine {
@@ -201,16 +209,23 @@ impl InputMethodEngine {
             shown_suggestions: CandidateList::default(),
             dicts: Dictionaries::default(),
             learning: None,
+            model_loading: None,
         }
     }
 
     /// Create with configuration
     pub fn with_config(config: EngineConfig) -> Self {
-        Self {
+        let mut engine = Self {
             live: LiveConversion::new(config.live_conversion),
-            config,
             ..Self::new()
-        }
+        };
+        // The symbol style is baked into the rule trie, so the converter is
+        // rebuilt rather than configured after the fact. It carries the
+        // width rules too: a keystroke settles at the width in force when
+        // it was typed.
+        engine.converters.romaji = RomajiConverter::with_rules(config.symbol, config.width);
+        engine.config = config;
+        engine
     }
 
     /// Conversion (inference) time of the last `process_key` /
@@ -240,6 +255,7 @@ impl InputMethodEngine {
         match (main, sub) {
             (Some(m), Some(s)) => format!("{}+{}", m, s),
             (Some(m), None) => m.to_string(),
+            _ if self.model_loading.is_some() => "loading".to_string(),
             _ => "unknown".to_string(),
         }
     }
@@ -478,8 +494,73 @@ impl InputMethodEngine {
         Some(EngineResult::not_consumed())
     }
 
+    /// Text the engine did not type, at the width its groups are
+    /// configured for: the model's answers and the candidates built from
+    /// them, the dictionaries, the learning cache.
+    ///
+    /// Typed text settles earlier, as each character leaves the romaji
+    /// converter, so it keeps the width in force when it was typed —
+    /// switching to alphabet input mid-word leaves 「（」 alone. This one is
+    /// for text that arrives already converted: the model is prompted with
+    /// NFKC and answers in half-width whatever was typed, so its output has
+    /// to be settled on the way in or the setting would never survive a
+    /// conversion.
+    ///
+    /// Never applied to a candidate the user picked — that is already the
+    /// width they chose, and a second pass would fold `＜＞１２３４` back to
+    /// `＜＞1234` on commit.
+    fn settle_text(&self, text: &str) -> String {
+        match self.mode.current() {
+            InputMode::Alphabet | InputMode::Emoji => text.to_string(),
+            InputMode::Hiragana | InputMode::Katakana => {
+                // Spaces follow `[symbol] space` the way symbols follow the
+                // width rules: NFKC flattens `　` to ` ` in the prompt, so
+                // the model can only ever answer with the half-width one.
+                let space = self.space_char();
+                self.config
+                    .width
+                    .apply_str(text)
+                    .chars()
+                    .map(|c| if c.is_whitespace() { space } else { c })
+                    .collect()
+            }
+        }
+    }
+
+    /// Build the candidate list a window shows and a selection indexes,
+    /// with the model's answers settled at the configured width.
+    ///
+    /// Only the model's. Its width is an artifact — the prompt is
+    /// NFKC-normalized, so the answer comes back half-width whatever was
+    /// typed — while every other source carries a width someone chose: a
+    /// dictionary surface is spelled the way its author spelled it
+    /// (`Yahoo!` with a half-width `!`), learning replays what the user
+    /// committed, the rewriter's variants *are* the width choice, and the
+    /// kana fallbacks settled as they were typed.
+    ///
+    /// Folding creates duplicates (with full-width digits both `1` and the
+    /// rewriter's `１` come out `１`) and only the first survives — dropped
+    /// here rather than at display time, since this list is also what
+    /// Ctrl+digit indexes and commit reads.
+    fn settle_candidates(&self, candidates: Vec<Candidate>) -> CandidateList {
+        let mut seen = HashSet::new();
+        let settled = candidates
+            .into_iter()
+            .filter_map(|mut candidate| {
+                if candidate.source == Some(CandidateSource::Model) {
+                    candidate.text = self.settle_text(&candidate.text);
+                }
+                seen.insert(candidate.text.clone()).then_some(candidate)
+            })
+            .collect();
+        CandidateList::new(settled)
+    }
+
     /// Process a key event
     pub fn process_key(&mut self, key: &KeyEvent) -> EngineResult {
+        // Install converters the background loader has finished; never blocks.
+        self.poll_loaded_models();
+
         // Log modifier key events for debugging key mapping issues
         if key.keysym.is_modifier() {
             debug!(

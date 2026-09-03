@@ -35,7 +35,7 @@ IME本体(コアエンジン + 各プラットフォームのフロントエン�
 - **候補リライター (Mozcから移植)**: 半角カタカナ、英字の大文字小文字・全角半角、記号の関連候補、数字の各種表記（漢数字・大字・ローマ数字・丸数字・16/8/2進数）を自動生成。各候補にはMozc由来の注釈（「半角カタカナ」「16進数」など）が付く
 - **絵文字入力**: かな読み（`ぴえん` → 🥺、`きんにく` → 💪）と Slack 風 `:trigger` クエリ（`:smile` → 😄、`:halo` → 😇）の両方をサポート
 
-> **Note:** 初回起動時にHugging Faceからモデルをダウンロードするため、初回の変換開始までに時間がかかります。2回目以降はダウンロード済みのモデルが使用されます。
+> **Note:** 初回起動時にHugging Faceからモデルをバックグラウンドでダウンロードします。ダウンロード中もかな入力と辞書変換はそのまま使え、モデルの読み込みが完了すると自動でニューラル変換が有効になります。ネットワークを使うのはこの初回ダウンロードだけで、2回目以降はダウンロード済みのモデルが使われます。
 
 ## インストール
 
@@ -49,6 +49,7 @@ IME本体(コアエンジン + 各プラットフォームのフロントエン�
 - [辞書](docs/dictionary.md) — システム辞書のインストール、ユーザ辞書、候補の優先順位
 - [ユーザ辞書](docs/user-dictionary.md) — 対応形式（Mozc/Google IME TSV・バイナリ）と登録方法
 - [Chunk](docs/chunking.md) — 変換が Chunk に区切られる場所と、自分で区切って表示を固定する方法
+- [記号・半角全角](docs/symbols.md) — 句読点や括弧の種類、記号・数字・英字の幅、スペースの設定
 
 ## ライセンス
 
@@ -57,7 +58,7 @@ MIT OR Apache-2.0 のデュアルライセンスで提供しています。
 - [MIT License](LICENSE-MIT)
 - [Apache License 2.0](LICENSE-APACHE)
 
-[karukan-engine/data/](karukan-engine/data/) 配下には [Mozc](https://github.com/google/mozc)（Google製日本語入力システム）から派生したデータを含み、こちらは [BSD 3-Clause License](http://opensource.org/licenses/BSD-3-Clause) のもとで配布されています。各派生ファイルの由来およびMozcの著作権表記は [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) を参照してください。
+[karukan-engine/data/](karukan-engine/data/) 配下には [Mozc](https://github.com/google/mozc) から派生したデータを含み、こちらは [BSD 3-Clause License](http://opensource.org/licenses/BSD-3-Clause) のもとで配布されています。各派生ファイルの由来およびMozcの著作権表記は [THIRD_PARTY_LICENSES](THIRD_PARTY_LICENSES) を参照してください。
 
 ---
 
@@ -108,13 +109,13 @@ Shift+矢印キーで選択範囲を作り、Spaceを押すと選択部分のみ
 
 入力中に表示されるオートサジェスト候補（学習キャッシュ・モデル推論・辞書）をTab/Downキーで直接選択できます。画面に出ている候補をそのまま変換状態へ引き上げるため、モデルの再推論が走りません。Up/Downで移動、Enterで確定できます。
 
-上流ではTabが「学習スキップ変換」に割り当てられていますが、本フォークではTabをサジェスト選択に使い、学習スキップ変換はShift+Spaceに移しています。
+上流ではTabが「学習スキップ変換」に割り当てられていますが、本フォークではTabをサジェスト選択に使い、学習スキップ変換はCtrl+Spaceに移しています（上流のShift+Spaceは入力中の空白挿入に使われるため）。
 
-| キー        | Composing状態での動作                            |
-| ----------- | ------------------------------------------------ |
-| Space       | フル変換（モデル再推論、学習込み）               |
-| Shift+Space | 学習スキップ変換（学習キャッシュを使わずに変換） |
-| Tab / Down  | オートサジェスト候補を選択（再推論なし）         |
+| キー       | Composing状態での動作                            |
+| ---------- | ------------------------------------------------ |
+| Space      | フル変換（モデル再推論、学習込み）               |
+| Ctrl+Space | 学習スキップ変換（学習キャッシュを使わずに変換） |
+| Tab / Down | オートサジェスト候補を選択（再推論なし）         |
 
 - 対象: `karukan-im/core/src/core/engine/conversion.rs`, `input.rs`
 

@@ -49,7 +49,7 @@ impl InputMethodEngine {
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
 
-        let candidate_list = Self::to_conversion_candidate_list(candidates, &reading);
+        let candidate_list = self.to_conversion_candidate_list(candidates, &reading);
         self.enter_conversion_state(&reading, candidate_list)
     }
 
@@ -77,7 +77,11 @@ impl InputMethodEngine {
         };
 
         let pure_hiragana = !selected.is_empty() && selected.chars().all(is_hiragana_char);
-        let Some(original) = self.partial.original_reading.as_ref().filter(|_| !pure_hiragana)
+        let Some(original) = self
+            .partial
+            .original_reading
+            .as_ref()
+            .filter(|_| !pure_hiragana)
         else {
             let (before, after) = take_span(sel_start, sel_end);
             return (selected, before, after);

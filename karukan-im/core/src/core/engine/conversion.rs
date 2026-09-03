@@ -182,17 +182,18 @@ impl InputMethodEngine {
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
 
-        let candidate_list = Self::to_conversion_candidate_list(candidates, &reading);
+        let candidate_list = self.to_conversion_candidate_list(candidates, &reading);
         self.enter_conversion_state(&reading, candidate_list)
     }
 
     /// Map builder output to the public [`CandidateList`] shown in the
-    /// conversion window.
+    /// conversion window, settled at the configured width.
     pub(super) fn to_conversion_candidate_list(
+        &self,
         candidates: Vec<AnnotatedCandidate>,
         reading: &str,
     ) -> CandidateList {
-        CandidateList::new(
+        self.settle_candidates(
             candidates
                 .into_iter()
                 .map(|ac| ac.into_candidate(reading))
@@ -341,14 +342,10 @@ impl InputMethodEngine {
         num_candidates: usize,
         learning: LearningLookup,
     ) -> Vec<AnnotatedCandidate> {
-        // Init failure is not fatal: symbol-only inputs don't need the
-        // model and still get dictionary/rewriter/fallback candidates.
-        if self.converters.kanji.is_none()
-            && let Err(e) = self.init_kanji_converter()
-        {
-            debug!("Failed to initialize kanji converter: {}", e);
-        }
-
+        // No converter (still loading in the background, or loading failed)
+        // just means no model candidates: symbol-only and early keystrokes
+        // still get dictionary/rewriter/fallback candidates. Loading here
+        // synchronously would block the key-event thread on the download.
         let candidates = self.model_candidates(reading, num_candidates);
 
         let hiragana = reading.to_string();
@@ -418,11 +415,7 @@ impl InputMethodEngine {
         }
         // Rewriters run on the typed reading only; running them on other
         // sources' candidates would emit variants nobody asked for.
-        for (variant, description) in self
-            .converters
-            .rewriters
-            .rewrite_all(&[reading.to_string()])
-        {
+        for (variant, description) in self.rewriter_variants(reading) {
             builder.push(
                 AnnotatedCandidate::new(variant, CandidateSource::Rewriter)
                     .with_description(description),
@@ -535,13 +528,25 @@ impl InputMethodEngine {
         .collect()
     }
 
+    /// Rewriter variants for `reading`, as `(text, description)` pairs.
+    ///
+    /// In emoji mode only the emoji rewriter runs: `:smile` is a query, and
+    /// another rewriter's width variant (`：ｓｍｉｌｅ`) would head the
+    /// picker and be what Enter commits.
+    pub(super) fn rewriter_variants(&self, reading: &str) -> Vec<RewriteOutput> {
+        if self.mode.current() == InputMode::Emoji {
+            return EmojiRewriter.rewrite(reading);
+        }
+        self.converters
+            .rewriters
+            .rewrite_all(&[reading.to_string()])
+    }
+
     /// Build rule-based rewriter variants for the reading itself (e.g. for
     /// symbol input `「` → `『`, `【`, `（`, ...). Used in the auto-suggest path
     /// so users see mozc-style symbol variants without pressing Space first.
     pub(super) fn lookup_rewriter_variants(&self, reading: &str) -> Vec<Candidate> {
-        self.converters
-            .rewriters
-            .rewrite_all(&[reading.to_string()])
+        self.rewriter_variants(reading)
             .into_iter()
             .map(|(text, description)| Candidate {
                 text,
@@ -606,6 +611,14 @@ impl InputMethodEngine {
             }
             // Backspace cancels back to the composition, like Escape.
             Keysym::BACKSPACE => self.cancel_conversion(),
+            // Caret keys drop back to editing, the same way a caret move
+            // ends the live-conversion display while composing: the
+            // conversion (and its source filter) dissolves and the raw
+            // reading gets the caret. Delegated to the composing handler so
+            // the two states cannot drift apart.
+            Keysym::LEFT | Keysym::RIGHT | Keysym::HOME | Keysym::END => {
+                self.in_composing(false, |e| e.process_key_composing(key, shift_active))
+            }
             _ => {
                 // Ctrl+N / Ctrl+P: emacs-style candidate navigation
                 if key.modifiers.control_key {
@@ -625,6 +638,21 @@ impl InputMethodEngine {
                         // alternatives cover only the text after the break.
                         Keysym::KEY_J | Keysym::KEY_J_UPPER => {
                             return self.rebreak_conversion();
+                        }
+                        // Ctrl+A/B/E/F: the same caret moves as while
+                        // composing, dropping back to editing like the
+                        // arrow keys above.
+                        Keysym::KEY_A
+                        | Keysym::KEY_A_UPPER
+                        | Keysym::KEY_B
+                        | Keysym::KEY_B_UPPER
+                        | Keysym::KEY_E
+                        | Keysym::KEY_E_UPPER
+                        | Keysym::KEY_F
+                        | Keysym::KEY_F_UPPER => {
+                            return self.in_composing(false, |e| {
+                                e.process_key_composing(key, shift_active)
+                            });
                         }
                         _ => {}
                     }
@@ -823,7 +851,7 @@ impl InputMethodEngine {
         if candidates.is_empty() {
             return self.cancel_conversion();
         }
-        let candidate_list = Self::to_conversion_candidate_list(candidates, &reading);
+        let candidate_list = self.to_conversion_candidate_list(candidates, &reading);
         let mut result = self.enter_conversion_state(&reading, candidate_list);
 
         if let Some(source) = prev_filter {

@@ -36,6 +36,13 @@ sudo cmake --install build
 fcitx5 -r
 ```
 
+> [!NOTE]
+> 既定でビルドマシンのCPU固有命令を使ってビルドします(`-C target-cpu=native`、変換が約5%速くなります)。
+> ビルドしたマシンでしか動かないバイナリになるため、配布用にビルドする場合は
+> `cmake -B build -DKARUKAN_NATIVE=OFF ...` を指定してください。自前の `RUSTFLAGS` を
+> 設定している場合はそちらが優先されます。手元で `cargo build --release` を直接叩くと
+> フラグの差でリビルドが走る点だけ注意してください。
+
 ### Build & Install (ユーザローカル)
 
 `~/.local` にインストールします。sudo 不要ですが、`FCITX_ADDON_DIRS` の手動設定が必要です。
@@ -90,7 +97,7 @@ I2026-02-24 22:57:54.252982 addonmanager.cpp:195] Loaded addon karukan
 ![Karukanを追加した状態](images/fcitx5-karukan-added.png)
 
 > [!NOTE]
-> 初回起動時にHuggingFaceからGGUFモデル（GGUF + tokenizer）を自動ダウンロードするため、起動に数分かかる場合があります。ダウンロード中はfcitx5のログに以下のような進捗が表示されます:
+> 初回起動時にHuggingFaceからGGUFモデル（GGUF + tokenizer）をバックグラウンドで自動ダウンロードします。ダウンロード中はfcitx5のログに以下のような進捗が表示されます:
 >
 > ```
 > I2026-02-24 23:12:12.651828 addonmanager.cpp:195] Loaded addon karukan
@@ -100,7 +107,7 @@ I2026-02-24 22:57:54.252982 addonmanager.cpp:195] Loaded addon karukan
 > tokenizer.json [00:00:00] [████████████████████████████████] 1.95 MiB/1.95 MiB 8.45 MiB/s (0s)
 > ```
 >
-> ダウンロードが完了するまで変換機能は使用できません。2回目以降はキャッシュ済みのモデルが使われるため、すぐに起動します。
+> ダウンロードが完了するまではモデルによる変換が使えず、かな入力と辞書変換のみで動作します。完了すると自動でモデル変換が有効になります。2回目以降はキャッシュ済みのモデルが使われるため、すぐに使えます。
 
 ## Surrounding Text
 
