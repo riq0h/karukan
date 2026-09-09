@@ -159,3 +159,58 @@ fn a_baked_surface_is_not_reconverted() {
     assert_eq!(committed(&result).as_deref(), Some("藍卯"));
 }
 
+#[test]
+fn a_partial_reconversion_is_not_passed_through() {
+    // Shift+Arrow bakes the live text, so the buffer is all settled. The
+    // selection is then re-converted from its *own* reading, which is not
+    // the buffer's — holding the buffer's settled run out of the model must
+    // not swallow it, or the re-conversion returns the reading unchanged
+    // and the target looks like it vanished.
+    let mut engine = InputMethodEngine::new();
+    engine.live.enabled = true;
+    seed_model_cache(&mut engine, "ワタシハペンデス", "", &["私はペンです"]);
+    seed_model_cache(&mut engine, "ペンデス", "", &["便です"]);
+
+    for ch in "watashihapendesu".chars() {
+        engine.process_key(&press(ch));
+    }
+    assert_eq!(engine.live_text(), "私はペンです");
+
+    // Bakes the live text and selects 「ペンです」 from the end.
+    for _ in 0..4 {
+        engine.process_key(&press_shift_key(Keysym::LEFT));
+    }
+    assert_eq!(engine.input_buf.display(), "私はペンです");
+
+    let result = engine.process_key(&press_key(Keysym::SPACE));
+    let shown: Vec<String> = result
+        .actions
+        .iter()
+        .rev()
+        .find_map(|a| match a {
+            EngineAction::ShowCandidates(l) => {
+                Some(l.candidates().iter().map(|c| c.text.clone()).collect())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    assert!(
+        shown.iter().any(|c| c == "便です"),
+        "the selection must reach the model, got {shown:?}"
+    );
+}
+
+#[test]
+fn a_selection_reconversion_does_not_inherit_the_buffers_settled_run() {
+    // Shift+Arrow bakes the live text, so the whole buffer is settled. The
+    // re-conversion then runs on the *selection's* reading, which is not the
+    // buffer's text at all — measuring the settled run against it passes the
+    // selection through verbatim and the model never sees it.
+    let mut engine = InputMethodEngine::new();
+    seed_model_cache(&mut engine, "ペンデス", "", &["便です"]);
+    engine.input_buf.replace_all_settled("私はペンです");
+    engine.partial.remaining = Some((String::new(), String::new()));
+
+    let chars: Vec<char> = "ぺんです".chars().collect();
+    assert_eq!(engine.convert_on_chunk_grid(&chars, ""), "便です");
+}

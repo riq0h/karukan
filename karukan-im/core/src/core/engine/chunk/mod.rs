@@ -56,7 +56,7 @@ impl InputMethodEngine {
         // not a reading. Converting it again hands the model its own output
         // and it comes back rewritten — 「サンテん」 as 「さんてん」, undoing
         // the choice. It still forms the left context for what follows.
-        let settled = self.input_buf.settled_prefix_len();
+        let settled = self.settled_prefix_len(chars.len());
         let mut chunks: Vec<ComposingChunk> = Vec::new();
         let mut combined = String::new();
         let mut at = 0usize;
@@ -106,12 +106,27 @@ impl InputMethodEngine {
         start
     }
 
+    /// Fork: how much of `chars` is an already chosen result, held out of
+    /// the model.
+    ///
+    /// Zero while a partial conversion is in flight: that converts the
+    /// *selection's* reading, which is not the buffer's text, so the
+    /// buffer's settled run measures nothing here — counting it anyway
+    /// passes the whole selection through and the re-conversion returns the
+    /// reading unchanged.
+    fn settled_prefix_len(&self, chars_len: usize) -> usize {
+        if self.partial.remaining.is_some() {
+            return 0;
+        }
+        self.input_buf.settled_prefix_len().min(chars_len)
+    }
+
     /// Positions nothing may span: the manual breaks, plus (fork) the end of
     /// an already chosen conversion result. A chunk never straddles a wall
     /// and the beam span stops at one, so a chosen result stays a chunk of
     /// its own and nothing to its right pulls it back into the model.
     fn chunk_walls(&self, len: usize) -> Vec<usize> {
-        let settled = self.input_buf.settled_prefix_len();
+        let settled = self.settled_prefix_len(len);
         if settled == 0 || settled >= len {
             return self.chunk_breaks.clone();
         }
