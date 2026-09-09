@@ -123,6 +123,7 @@ impl InputMethodEngine {
         }
 
         self.input_buf.replace_all_settled(&baked);
+        self.partial.baked_chars = Some(self.input_buf.char_count());
         self.live.shown = false;
         self.chunks.clear();
         self.chunk_breaks.clear();
@@ -175,8 +176,9 @@ impl InputMethodEngine {
 
     /// Fold the selected candidate (plus any parked before/after text) back
     /// into the composition and return to Composing, keeping the pre-bake
-    /// reading for alignment.
-    fn bake_conversion_for_selection(&mut self) {
+    /// reading for alignment. Also used by the refining-keystroke path in
+    /// `conversion.rs`, which settles an explicit choice the same way.
+    pub(super) fn bake_conversion_for_selection(&mut self) {
         let Some((text, _)) = self.selected_conversion_info() else {
             return;
         };
@@ -188,6 +190,7 @@ impl InputMethodEngine {
             None => text,
         };
         self.input_buf.replace_all_settled(&baked);
+        self.partial.baked_chars = Some(self.input_buf.char_count());
         self.live.shown = false;
         self.chunks.clear();
         self.chunk_breaks.clear();
@@ -195,10 +198,25 @@ impl InputMethodEngine {
     }
 
     /// The reading to learn against when the whole composition is finally
-    /// committed: the pre-bake hiragana if any partial conversion happened,
-    /// otherwise the current reading.
+    /// committed: the pre-bake hiragana if anything was baked, otherwise the
+    /// current reading.
+    ///
+    /// Typing continues after a bake on the refining-keystroke path, so the
+    /// buffer is baked surface followed by plain kana. Only the surface has
+    /// to be swapped back for its reading; the kana tail past `baked_chars`
+    /// is already the reading of itself.
     pub(super) fn take_learning_reading(&mut self, fallback: String) -> String {
-        self.partial.original_reading.take().unwrap_or(fallback)
+        let baked_chars = self.partial.baked_chars.take();
+        let Some(original) = self.partial.original_reading.take() else {
+            return fallback;
+        };
+        let tail: String = self
+            .input_buf
+            .reading()
+            .chars()
+            .skip(baked_chars.unwrap_or(usize::MAX))
+            .collect();
+        format!("{original}{tail}")
     }
 }
 

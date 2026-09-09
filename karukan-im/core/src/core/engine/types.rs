@@ -308,6 +308,12 @@ pub(in crate::core) struct PartialConversion {
     /// baked in. Kept so a later selection over kanji/katakana can be mapped
     /// back to its reading via character alignment (`karukan_engine::align`).
     pub original_reading: Option<String>,
+    /// How many characters of the buffer the last bake settled. Anything
+    /// past it was typed afterwards and is still plain kana, so the reading
+    /// to learn against is `original_reading` plus that tail. `None` until
+    /// something is baked; the tail is empty in the Shift+Arrow flow, where
+    /// the whole reading is typed before any conversion.
+    pub baked_chars: Option<usize>,
 }
 
 /// Dictionary store: system, user, and future cache dictionaries

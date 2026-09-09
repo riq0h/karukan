@@ -23,6 +23,7 @@ mod partial;
 mod passthrough;
 mod pending_romaji;
 mod predictive;
+mod refine;
 mod rewriter;
 mod source_filter;
 mod strategy;
