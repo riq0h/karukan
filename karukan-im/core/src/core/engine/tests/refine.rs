@@ -52,13 +52,32 @@ fn typing_after_moving_the_selection_bakes_it() {
 }
 
 #[test]
-fn typing_without_moving_the_selection_still_refines() {
-    // Nothing was chosen — the list is just open — so the upstream
-    // incremental behaviour stands and the reading grows.
+fn typing_bakes_the_head_of_the_list_too() {
+    // The head is a choice like any other: when the candidate the user
+    // wanted is already first — which is what learning is for — Space lands
+    // on it without the cursor ever moving. Requiring a move would leave
+    // exactly that case unbaked.
     let mut engine = engine_in_conversion();
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("合い")
+    );
 
     let result = engine.process_key(&press('u'));
-    assert_eq!(preedit_of(&result).as_deref(), Some("あいう"));
+    assert_eq!(preedit_of(&result).as_deref(), Some("合いう"));
+}
+
+#[test]
+fn typing_while_composing_is_untouched() {
+    // Without Space there is no conversion window and nothing to keep, so
+    // the reading grows as it always did — this is where the incremental
+    // feel lives, and live conversion rewrites the preedit as you type.
+    let mut engine = InputMethodEngine::new();
+    seed_model_cache(&mut engine, "アイ", "", &["合い"]);
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('i'));
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(preedit_of(&result).as_deref(), Some("あい"));
 }
 
 #[test]
@@ -109,5 +128,34 @@ fn backspace_still_cancels_instead_of_baking() {
     let result = engine.process_key(&press_key(Keysym::BACKSPACE));
     assert_eq!(preedit_of(&result).as_deref(), Some("あい"));
     assert!(matches!(engine.state(), InputState::Composing { .. }));
+}
+
+#[test]
+fn a_baked_surface_is_not_reconverted() {
+    // The bake settles a surface, but it stays in the buffer and the buffer
+    // is what live conversion reads. Unless the settled run is held out of
+    // the model, the next keystroke feeds it back in and the model rewrites
+    // it — 「サンテん」 comes back as 「さんてん」, undoing the choice.
+    let mut engine = InputMethodEngine::new();
+    engine.live.enabled = true;
+    seed_model_cache(&mut engine, "アイ", "", &["藍"]);
+    // Only the tail may reach the model, with the settled 藍 as its context.
+    seed_model_cache(&mut engine, "ウ", "藍", &["卯"]);
+    // The entry that answers if the settled 藍 is fed back in.
+    seed_model_cache(&mut engine, "藍ウ", "", &["あいう"]);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("藍")
+    );
+
+    let result = engine.process_key(&press('u'));
+    assert_eq!(preedit_of(&result).as_deref(), Some("藍卯"));
+
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert_eq!(committed(&result).as_deref(), Some("藍卯"));
 }
 

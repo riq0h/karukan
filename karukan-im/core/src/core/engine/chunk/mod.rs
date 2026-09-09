@@ -52,10 +52,25 @@ impl InputMethodEngine {
     /// disagree about where the boundaries are.
     fn convert_chunks(&mut self, chars: &[char], base_ctx: &str) -> Vec<ComposingChunk> {
         let groups = self.split_chunks(chars);
+        // Fork: everything up to here is a surface the user already chose,
+        // not a reading. Converting it again hands the model its own output
+        // and it comes back rewritten — 「サンテん」 as 「さんてん」, undoing
+        // the choice. It still forms the left context for what follows.
+        let settled = self.input_buf.settled_prefix_len();
         let mut chunks: Vec<ComposingChunk> = Vec::new();
         let mut combined = String::new();
+        let mut at = 0usize;
         for reading in groups {
-            let new = self.convert_new_chunk(reading, base_ctx, &combined);
+            let len = reading.chars().count();
+            let new = if at + len <= settled {
+                ComposingChunk {
+                    converted: reading.clone(),
+                    reading,
+                }
+            } else {
+                self.convert_new_chunk(reading, base_ctx, &combined)
+            };
+            at += len;
             combined.push_str(&new.converted);
             chunks.push(new);
         }
@@ -68,6 +83,7 @@ impl InputMethodEngine {
     /// manual break is a wall: the user froze everything left of it.
     pub(super) fn trailing_chunks_start(&self, chars: &[char], budget: usize) -> usize {
         let chunks = self.split_chunks(chars);
+        let walls = self.chunk_walls(chars.len());
         let mut start = chars.len();
         let mut taken = 0;
         for chunk in chunks.iter().rev() {
@@ -83,11 +99,27 @@ impl InputMethodEngine {
             }
             taken += len;
             start -= len;
-            if self.chunk_breaks.contains(&start) {
+            if walls.contains(&start) {
                 break;
             }
         }
         start
+    }
+
+    /// Positions nothing may span: the manual breaks, plus (fork) the end of
+    /// an already chosen conversion result. A chunk never straddles a wall
+    /// and the beam span stops at one, so a chosen result stays a chunk of
+    /// its own and nothing to its right pulls it back into the model.
+    fn chunk_walls(&self, len: usize) -> Vec<usize> {
+        let settled = self.input_buf.settled_prefix_len();
+        if settled == 0 || settled >= len {
+            return self.chunk_breaks.clone();
+        }
+        let mut walls = self.chunk_breaks.clone();
+        walls.push(settled);
+        walls.sort_unstable();
+        walls.dedup();
+        walls
     }
 
     /// Split `chars` with the engine's configured rules. The single place
@@ -100,7 +132,7 @@ impl InputMethodEngine {
             digits: self.config.chunk_digits,
             alphabets: self.config.chunk_alphabets,
         };
-        group_chunks(chars, limits, &self.chunk_breaks)
+        group_chunks(chars, limits, &self.chunk_walls(chars.len()))
     }
 
     /// Top-1 conversion of `chars` on the same chunk grid live conversion

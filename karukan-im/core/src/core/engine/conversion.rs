@@ -698,10 +698,10 @@ impl InputMethodEngine {
 
                 // A printable character refines instead of committing:
                 // the reading grows and the suggestion rewrites in place,
-                // keeping any active source filter. Fork: unless the user
-                // picked a candidate, which is kept.
+                // keeping any active source filter. Fork: outside a
+                // narrowed view it keeps the selected candidate instead.
                 if key.to_char().is_some() && !key.modifiers.control_key {
-                    if self.selection_moved() {
+                    if self.state.filter().is_none() {
                         return self.bake_selection_then_type(key, shift_active);
                     }
                     return self.refine_through_composing(key, shift_active);
@@ -715,30 +715,26 @@ impl InputMethodEngine {
         }
     }
 
-    /// Fork: whether the user moved the selection off the head of the list.
-    /// Only then is there a choice worth keeping — an untouched list is
-    /// just the window being open, and treating that as a choice would
-    /// freeze a guess the user never made.
-    fn selection_moved(&self) -> bool {
-        matches!(
-            &self.state,
-            InputState::Conversion { candidates, .. } if candidates.cursor() != 0
-        )
-    }
-
-    /// Fork: settle an explicitly chosen candidate into the composition,
+    /// Fork: settle the selected candidate into the composition,
     /// then let the keystroke continue after it.
     ///
     /// Upstream drops back to the *untouched* composition on every refining
     /// key, which throws the choice away: the whole reading is reconverted
     /// from scratch, the chosen surface is not guaranteed to come back, and
-    /// nothing is recorded either — learning only happens on commit. Baking
-    /// settles it as composition text instead, so nothing reaches the
-    /// application before Enter and the incremental feel survives for the
-    /// untouched list, which is the common case.
+    /// nothing is recorded either — learning only happens on commit.
     ///
-    /// A source filter does not survive: settling a choice ends the query
-    /// the view was narrowing.
+    /// Reaching the Conversion state takes a deliberate Space (or
+    /// Ctrl+T/R/I), so whatever is selected when the next character arrives
+    /// is a choice — including the head of the list, which is where
+    /// learning puts the candidate the user keeps picking. Requiring the
+    /// cursor to have moved would leave exactly that case unbaked. The
+    /// incremental feel this displaces lives in live conversion, which
+    /// rewrites the preedit while composing without any Space at all;
+    /// nothing reaches the application before Enter either way.
+    ///
+    /// A narrowed source view is the exception, handled by the caller: there
+    /// typing *is* the query — the view exists to search a source — so it
+    /// keeps refining as upstream does.
     fn bake_selection_then_type(&mut self, key: &KeyEvent, shift_active: bool) -> EngineResult {
         self.bake_conversion_for_selection();
         self.process_key_composing(key, shift_active)
