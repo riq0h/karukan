@@ -113,7 +113,7 @@ pub struct KarukanEngine {
 
 impl KarukanEngine {
     fn new() -> Self {
-        Self::with_settings(Settings::load().unwrap_or_default())
+        Self::with_settings(Settings::load_or_default())
     }
 
     /// Build from explicit settings. Tests use this with

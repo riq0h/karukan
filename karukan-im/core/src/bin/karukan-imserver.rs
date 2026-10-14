@@ -6,13 +6,35 @@
 //! frontend should close the child's stdin (or send `save_learning`) before
 //! terminating it.
 //!
-//! `--prefetch-models` downloads every conversion model listed in
-//! `models.toml` into the HuggingFace cache and exits (used by `make install`
-//! to avoid a multi-minute download on first launch).
+//! `--prefetch-models` downloads every conversion model defined in the
+//! config's `[models]` table into the HuggingFace cache and exits (used by
+//! `make install` to avoid a multi-minute download on first launch).
 
 use std::io::{BufRead, Write};
 
+use anyhow::Context;
+use karukan_im::config::Settings;
 use karukan_im::server::ImServer;
+
+/// Warm the HF cache for every `[models]` entry; local-path entries are
+/// only checked for existence. Stops at the first failure: the next one
+/// would only repeat the cause after another network timeout.
+fn prefetch_models() -> anyhow::Result<()> {
+    let settings = Settings::load()?;
+    for key in settings.models.keys() {
+        let (gguf, tokenizer) = settings
+            .model_source(key)?
+            .resolve()
+            .with_context(|| format!("model '{key}'"))?;
+        tracing::info!(
+            "Model '{}' ready: {} (tokenizer: {})",
+            key,
+            gguf.display(),
+            tokenizer.display()
+        );
+    }
+    Ok(())
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -24,8 +46,8 @@ fn main() {
         .init();
 
     if std::env::args().any(|arg| arg == "--prefetch-models") {
-        if let Err(e) = karukan_engine::kanji::hf_download::prefetch_all_models() {
-            tracing::error!("model prefetch failed: {e}");
+        if let Err(e) = prefetch_models() {
+            tracing::error!("model prefetch failed: {e:#}");
             std::process::exit(1);
         }
         return;

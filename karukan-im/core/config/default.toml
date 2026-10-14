@@ -10,6 +10,10 @@ num_candidates = 9
 use_context = true
 # 変換API に渡す周辺テキストの最大文字数
 context_chars = 10
+# 変換ペルソナ。よく書く文章と関連のあるキーワード（例: "プログラミング"）を書くとモデルへ渡す左コンテキストの
+# 先頭に毎回付与され、それに合わせた変換が出やすくなる（くろーど → Claude）。
+# 詳細は docs/persona.md を参照。末尾25文字まで使用（10〜20文字推奨）。空で無効。
+persona = ""
 # 一度にAI変換する Chunk の最大文字数。長文を入力しても1キーあたりの変換時間が
 # 伸びないようにするための区切り。詳細は docs/chunking.md を参照。
 chunk_chars = 30
@@ -37,15 +41,30 @@ beam_chars = 30
 beam_width = 3
 # メインモデルの推論がこの時間(ms)を超えたらlight_modelに自動切替(0で無効)
 max_latency_ms = 100
-# Model variant id or GGUF path (uses registry default if unset)
+# メインモデル（[models] で定義したキーを指定する）
 model = "jinen-v2-small-q5"
-# Beam search model for Space conversion (uses default model only if unset)
+# 軽量モデル（ビームサーチ・自動切替用。[models] のキーを指定する）
 light_model = "jinen-v2-xsmall-q5"
 # 推論スレッド数（0 = 全コア使用）
 n_threads = 4
 # 起動時にライブ変換を有効にする（Ctrl+Shift+L で実行中も切替可能）
 live_conversion = true
 # ユーザー辞書: ~/.local/share/karukan-im/user_dicts/ に辞書ファイルを配置（Mozc TSV or KRKN binary）
+
+# 変換モデル。model / light_model はここのキーを参照する。値は 2 通り:
+#   ローカルの GGUF: パスの文字列（tokenizer.json を同じディレクトリに置く）
+#   Hugging Face:    { repo = "...", filename = "..." }（tokenizer.json は同じリポジトリから。初回起動時に自動ダウンロード）
+#
+# 追加例:
+# [models]
+# jinen-v2-small-q8 = { repo = "togatogah/jinen-v2-small.gguf", filename = "jinen-v2-small-Q8_0.gguf" }
+# my-model = "/home/user/models/my-model.gguf"
+
+[models]
+jinen-v2-small-q5 = { repo = "togatogah/jinen-v2-small.gguf", filename = "jinen-v2-small-Q5_K_M.gguf" }
+jinen-v2-xsmall-q5 = { repo = "togatogah/jinen-v2-xsmall.gguf", filename = "jinen-v2-xsmall-Q5_K_M.gguf" }
+jinen-v1-small-q5 = { repo = "togatogah/jinen-v1-small.gguf", filename = "jinen-v1-small-Q5_K_M.gguf" }
+jinen-v1-xsmall-q5 = { repo = "togatogah/jinen-v1-xsmall.gguf", filename = "jinen-v1-xsmall-Q5_K_M.gguf" }
 
 [learning]
 # 変換学習を有効にする
@@ -62,6 +81,9 @@ verbose = false
 # 補助テキストそのものを表示する。false にするとモード表示・読みも含めて
 # 一切表示せず、プリエディットと候補ウインドウだけになる。
 show_aux_text = true
+# 候補ウィンドウをいつ開くか。"always" は入力中から常時、"conversion" は Space で
+# 変換を始めてから。絵文字モードの候補は設定に関わらず出る。
+candidate_window = "always"
 
 # どのキーがどの記号を入力するか。幅（半角・全角）は [width] が決める。
 [symbol]

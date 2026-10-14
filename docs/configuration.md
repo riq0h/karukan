@@ -12,10 +12,11 @@ chunk_alphabets = 0             # Chunk に残せる英字の数（0 = 英字は
 strategy = "adaptive"           # 変換ストラテジー（adaptive / light / main）
 num_candidates = 9              # 変換候補数（Space押下時）
 n_threads = 4                   # 推論スレッド数（0 = 全コア使用）
-model = "jinen-v2-small-q5"     # メインモデル（モデルID or GGUFパス）
-light_model = "jinen-v2-xsmall-q5"  # 軽量モデル（ビームサーチ・長文用）
+model = "jinen-v2-small-q5"     # メインモデル（[models] のキーを指定）
+light_model = "jinen-v2-xsmall-q5"  # 軽量モデル（ビームサーチ・長文用。[models] のキーを指定）
 use_context = true              # Surrounding Textを変換に使用する
 context_chars = 10              # 変換に使う前後テキストの最大文字数
+persona = ""                    # 変換ペルソナ（例: "プログラミング"。[変換ペルソナ](persona.md) 参照）
 beam_chars = 30                 # 別候補を出す範囲の文字数（Chunk単位で後ろからまとめる）
 beam_width = 3                  # 別候補の本数
 max_latency_ms = 100            # メインモデルの許容レイテンシ（ms）。超過時は軽量モデルに自動切替（0 = 無効）
@@ -45,18 +46,39 @@ phrases = [                    # フレーズ一覧（書くと既定一覧ご�
 ]
 ```
 
-`model` / `light_model` に指定できるモデルIDは以下です（指定したモデルは初回起動時にHugging Faceからバックグラウンドで自動ダウンロードされます）。設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+> [!NOTE]
+> 上記は主要な設定項目の抜粋です。全項目の正確な既定値と説明は [`config/default.toml`](../karukan-im/core/config/default.toml) を参照してください（各設定行に日本語コメント付き）。
 
-| モデルID | ベースモデル | パラメータ数 | Accuracy@1 (NFKC) |
+## モデルの定義（[models]）
+
+変換モデルは `[models]` テーブルで定義し、`model` / `light_model` はそのキーを参照します。値は 2 通りです。
+
+- 文字列: ローカルの GGUF ファイルのパス。`tokenizer.json` は GGUF と同じディレクトリに置きます
+- `{ repo = "...", filename = "..." }`: Hugging Face のリポジトリと GGUF ファイル名。初回起動時にバックグラウンドで自動ダウンロードされます。`tokenizer.json` は同じリポジトリから読み込みます
+
+既定で以下の4モデルが定義済みです（ユーザーの `config.toml` の `[models]` はキー単位でマージされ、同じキーは上書き、既定のエントリはそのまま残ります）。
+
+| モデルキー | ベースモデル | パラメータ数 | Accuracy@1 (NFKC) |
 |---------|-----------|-----------|------:|
 | [`jinen-v2-small-q5`](https://huggingface.co/togatogah/jinen-v2-small.gguf)（デフォルト） | Qwen3 | 109M | 86.0% |
 | [`jinen-v2-xsmall-q5`](https://huggingface.co/togatogah/jinen-v2-xsmall.gguf) | Qwen3 | 36M | 79.0% |
-| [`jinen-v1.1-beta-q5`](https://huggingface.co/togatogah/jinen-v1.1-beta.gguf) | Qwen3 | 109M（beta） | 86.0% |
 | [`jinen-v1-small-q5`](https://huggingface.co/togatogah/jinen-v1-small.gguf) | GPT-2 | 90M | 76.5% |
 | [`jinen-v1-xsmall-q5`](https://huggingface.co/togatogah/jinen-v1-xsmall.gguf) | GPT-2 | 26M | 71.0% |
 
-> [!NOTE]
-> 上記は主要な設定項目の抜粋です。全項目の正確な既定値と説明は [`config/default.toml`](../karukan-im/core/config/default.toml) を参照してください（各設定行に日本語コメント付き）。
+自作モデルを使うには `[models]` にエントリを追加して `model` から参照します。
+
+```toml
+[conversion]
+model = "jinen-v2-small-q8"
+
+[models]
+jinen-v2-small-q8 = { repo = "togatogah/jinen-v2-small.gguf", filename = "jinen-v2-small-Q8_0.gguf" }
+my-model = "/home/user/models/my-model.gguf"
+```
+
+既定のモデルを差し替えるには同じキーに書きます（`jinen-v2-small-q5 = "/path/to/model.gguf"`）。不正なエントリは起動時のログと、そのモデルを使うときのエラーに出ます。
+
+設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
 
 ## Live Conversion
 
@@ -76,6 +98,15 @@ phrases = [                    # フレーズ一覧（書くと既定一覧ご�
 
 「きょう」「あした」「いま」などを変換すると日付・時刻の候補が出ます（`きょう` → `2026/09/06`・`令和8年9月6日`・`日曜日` など）。フレーズは `[date]` の `phrases` に読みと `offset_days`（今日±何日）で登録し、出力形式は `{YEAR}年{MONTH:bare}月` のようなフォーマットで指定します（`:bare` でゼロ埋めなし、`:kanji` で漢数字）。既定フレーズ・フォーマット一覧と設定例は [日付・時刻](date.md) を参照してください。
 
+## 候補ウィンドウ
+
+```toml
+[display]
+candidate_window = "always"     # "conversion" にすると Space で変換を始めるまで開かない
+```
+
+既定では入力中から候補ウィンドウが開き、学習・辞書・AI の候補を Ctrl+1〜9 で選べます。`"conversion"` にすると入力中は開かず、Space で変換を始めたときだけ開きます。補助テキストも候補ウィンドウの一部なので一緒に出なくなります。絵文字モードの候補は設定に関わらず表示されます。
+
 ## 詳細表示（verbose）
 
 ```toml
@@ -91,8 +122,13 @@ verbose = false                 # 補助テキストに詳細を出す（Ctrl+Sh
 |------|-----|--------|
 | ビームサーチの対象 | `🎯 うえ 2/30` | 変換中の読みの表示が入れ替わる。🎯 の後ろ（`うえ`）にだけ別候補が出る。それより前は表示中の変換のまま。`2/30` は対象の文字数と `beam_chars` の値 |
 | 推論時間 | `推論: 41ms key: 45ms` | モデルの呼び出しにかかった時間と、その打鍵の処理全体にかかった時間。キャッシュに当たった場合、推論は `0ms` になる |
-| モデル名 | `jinen-v2-small-q5` | その変換を実行したモデル |
-| モデルに渡した文脈 | `lctx: 昨日は` | 変換時に前方の文脈としてモデルへ渡した文字列 |
+| モデル名 | `jinen-v2-small-q5` | 表示中の候補を出したモデル（`[models]` のキー） |
+| モデルに渡した文脈 | `lctx: 昨日は` | 変換時に前方の文脈としてモデルへ渡した文字列（[ペルソナ](persona.md) は含まない）。ターミナルのインデントのような空白だけの文脈は捨てるので表示されない |
+| ペルソナ | `⚡[あ]P:プログラミング` | モード表示に、モデルへ渡している `persona` の実効値が付く |
+
+## 変換ペルソナ
+
+`persona` によく書く文章と関連のあるキーワードを書くと、それに寄せた変換が出やすくなります（`persona = "プログラミング"` で `くろーど` → `Claude`、`らすと` → `Rust`）。書き方と詳細表示での確認方法は [変換ペルソナ](persona.md) を参照してください。
 
 ## Conversion Strategy
 

@@ -29,6 +29,11 @@ Rust側(`karukan-im`)にあり、Swift側はInputMethodKitとの橋渡しに徹�
 
 ### 初回インストール
 
+#### 前提条件
+
+- Xcodeコマンドラインツール(`swift`、`make`): `xcode-select --install`
+- [Rust](https://www.rust-lang.org/tools/install)(`cargo`)
+
 ```bash
 cd karukan-im/macos
 
@@ -42,8 +47,9 @@ make install
 2. 「システム設定」>「キーボード」>「入力ソース」を編集 >「+」ボタン>「日本語」> **Karukan** を追加
 3. メニューバーの入力メニューからKarukanを選択
 
-> **Note:** `make install` 実行時に変換モデル(`models.toml` に定義された全モデル)を
+> **Note:** `make install` 実行時に変換モデル(設定の `[models]` に定義された全モデル)を
 > Hugging Faceからダウンロードしてキャッシュ(`~/.cache/huggingface/`)に配置します。
+> パス文字列で指定したローカルモデルはダウンロードせず、ファイルがあるかだけ確認します。
 > オフラインなどでダウンロードに失敗した場合は、IMEの起動時にバックグラウンドで
 > ダウンロードされます。その間もかな入力と辞書変換はそのまま使え、モデルの読み込みが
 > 完了すると自動でモデル変換が有効になります。

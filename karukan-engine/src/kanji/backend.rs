@@ -1,26 +1,48 @@
-//! Backend interface for kanji conversion using llama.cpp
+//! Model source resolution and the kana-kanji converter
 
 use super::error::KanjiError;
-use super::hf_download::{get_tokenizer_path, get_variant_path};
+use super::hf_download::download_gguf;
 use super::llamacpp::LlamaCppModel;
-use super::model_config::{ModelFamily, VariantConfig, registry};
 use super::{CONTEXT_TOKEN, INPUT_START_TOKEN, OUTPUT_START_TOKEN};
 use crate::kana::{hiragana_to_katakana, normalize_nfkc};
+use std::path::PathBuf;
 
 type Result<T> = super::error::Result<T>;
 
-/// Configuration for kanji conversion
-#[derive(Debug, Clone)]
-pub struct ConversionConfig {
-    /// Maximum number of new tokens to generate
-    pub max_new_tokens: usize,
+/// Where a conversion model's GGUF comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelSource {
+    /// A HuggingFace repo; `tokenizer.json` comes from the same repo.
+    HuggingFace { repo: String, filename: String },
+    /// A local GGUF file; `tokenizer.json` must sit in the same directory.
+    Path(PathBuf),
 }
 
-impl Default for ConversionConfig {
-    fn default() -> Self {
-        Self { max_new_tokens: 50 }
+impl ModelSource {
+    /// Resolve to local `(gguf, tokenizer.json)` paths. HuggingFace files
+    /// are served cache-first and downloaded on a cache miss.
+    pub fn resolve(&self) -> Result<(PathBuf, PathBuf)> {
+        match self {
+            ModelSource::HuggingFace { repo, filename } => Ok((
+                download_gguf(repo, filename)?,
+                download_gguf(repo, "tokenizer.json")?,
+            )),
+            ModelSource::Path(path) => {
+                if !path.is_file() {
+                    return Err(KanjiError::ModelNotFound(path.clone()));
+                }
+                let tokenizer = path.with_file_name("tokenizer.json");
+                if !tokenizer.is_file() {
+                    return Err(KanjiError::TokenizerNotFound(tokenizer));
+                }
+                Ok((path.clone(), tokenizer))
+            }
+        }
     }
 }
+
+/// Cap on the tokens generated per conversion.
+const MAX_NEW_TOKENS: usize = 50;
 
 /// Build a prompt in jinen format.
 ///
@@ -42,60 +64,21 @@ pub fn clean_model_output(text: &str) -> String {
     text.trim().to_string()
 }
 
-/// Inference backend configuration (llama.cpp GGUF format with external tokenizer)
-#[derive(Debug, Clone)]
-pub struct Backend {
-    gguf_path: String,
-    tokenizer_json_path: String,
-    /// Display name for the model (variant id for registry models, "custom" for GGUF paths)
-    display_name: String,
-}
-
-impl Backend {
-    /// Create a backend from a `(ModelFamily, VariantConfig)` pair.
-    ///
-    /// Downloads the GGUF and the external tokenizer from HuggingFace.
-    pub fn from_variant(family: &ModelFamily, variant: &VariantConfig) -> Result<Self> {
-        let path = get_variant_path(family, variant)?;
-        let tokenizer_path = get_tokenizer_path(family)?;
-        Ok(Backend {
-            gguf_path: path.to_string_lossy().to_string(),
-            tokenizer_json_path: tokenizer_path.to_string_lossy().to_string(),
-            display_name: variant.id.clone(),
-        })
-    }
-
-    /// Create a backend by looking up a variant id in the global registry.
-    ///
-    /// E.g. `Backend::from_variant_id("jinen-v1-xsmall-q5")`
-    pub fn from_variant_id(variant_id: &str) -> Result<Self> {
-        let (family, variant) = registry()
-            .find_variant(variant_id)
-            .ok_or_else(|| KanjiError::UnknownVariant(variant_id.to_string()))?;
-        Self::from_variant(family, variant)
-    }
-}
-
 /// Kanji converter using llama.cpp backend
 pub struct KanaKanjiConverter {
     model: LlamaCppModel,
-    config: ConversionConfig,
     display_name: String,
 }
 
 impl KanaKanjiConverter {
-    /// Create a new converter with the specified backend
-    pub fn new(backend: Backend) -> Result<Self> {
-        Self::with_config(backend, ConversionConfig::default())
-    }
-
-    /// Create a new converter with the specified backend and configuration
-    pub fn with_config(backend: Backend, config: ConversionConfig) -> Result<Self> {
-        let model = LlamaCppModel::from_file(&backend.gguf_path, &backend.tokenizer_json_path)?;
+    /// Load the model at `source`. `name` is what the UI shows for it: the
+    /// `[models]` key, for a configured model.
+    pub fn from_source(source: &ModelSource, name: &str) -> Result<Self> {
+        let (gguf, tokenizer) = source.resolve()?;
+        let model = LlamaCppModel::from_file(&gguf, &tokenizer)?;
         Ok(KanaKanjiConverter {
             model,
-            config,
-            display_name: backend.display_name,
+            display_name: name.to_string(),
         })
     }
 
@@ -133,9 +116,7 @@ impl KanaKanjiConverter {
 
         if num_candidates == 1 {
             // Single candidate: use greedy decoding (faster)
-            let output_tokens = self
-                .model
-                .generate(&tokens, self.config.max_new_tokens, eos)?;
+            let output_tokens = self.model.generate(&tokens, MAX_NEW_TOKENS, eos)?;
             let generated = &output_tokens[tokens.len()..];
             let text = self.model.decode(generated, true)?;
             let clean = clean_model_output(&text);
@@ -145,12 +126,9 @@ impl KanaKanjiConverter {
             }
         } else {
             // Multiple candidates: use beam search
-            let results = self.model.generate_beam_search(
-                &tokens,
-                self.config.max_new_tokens,
-                eos,
-                num_candidates,
-            )?;
+            let results =
+                self.model
+                    .generate_beam_search(&tokens, MAX_NEW_TOKENS, eos, num_candidates)?;
 
             for (output_tokens, _score) in results {
                 let text = self.model.decode(&output_tokens, true)?;
@@ -180,12 +158,55 @@ impl KanaKanjiConverter {
 mod tests {
     use super::*;
 
+    fn hugging_face_source(repo: &str, filename: &str) -> ModelSource {
+        ModelSource::HuggingFace {
+            repo: repo.to_string(),
+            filename: filename.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_resolve_missing_gguf() {
+        let source = ModelSource::Path(PathBuf::from("/nonexistent/model.gguf"));
+        let err = source.resolve().unwrap_err();
+        assert!(matches!(err, KanjiError::ModelNotFound(_)), "{err}");
+    }
+
+    #[test]
+    fn test_resolve_missing_tokenizer() {
+        let dir = tempfile::tempdir().unwrap();
+        let gguf = dir.path().join("model.gguf");
+        std::fs::write(&gguf, b"gguf").unwrap();
+
+        let err = ModelSource::Path(gguf).resolve().unwrap_err();
+        let expected = dir.path().join("tokenizer.json");
+        match err {
+            KanjiError::TokenizerNotFound(path) => assert_eq!(path, expected),
+            other => panic!("expected TokenizerNotFound, got {other}"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_local_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let gguf = dir.path().join("my-model.gguf");
+        std::fs::write(&gguf, b"gguf").unwrap();
+        std::fs::write(dir.path().join("tokenizer.json"), b"{}").unwrap();
+
+        let (model, tokenizer) = ModelSource::Path(gguf.clone()).resolve().unwrap();
+        assert_eq!(model, gguf);
+        assert_eq!(tokenizer, dir.path().join("tokenizer.json"));
+    }
+
     #[test]
 
     fn test_default_model_conversion() {
-        let backend =
-            Backend::from_variant_id("jinen-v2-small-q5").expect("Failed to load default model");
-        let converter = KanaKanjiConverter::new(backend).expect("Failed to create converter");
+        let source = hugging_face_source(
+            "togatogah/jinen-v2-small.gguf",
+            "jinen-v2-small-Q5_K_M.gguf",
+        );
+        let converter =
+            KanaKanjiConverter::from_source(&source, "small").expect("Failed to load model");
 
         let result = converter.convert("かんじ", "", 1);
         assert!(result.is_ok(), "Conversion failed: {:?}", result.err());
@@ -204,11 +225,12 @@ mod tests {
     #[test]
 
     fn test_xsmall_special_tokens() {
-        use super::super::hf_download::{get_path_by_id, get_tokenizer_path_by_id};
         use super::super::{CONTEXT_TOKEN, INPUT_START_TOKEN, OUTPUT_START_TOKEN};
-        let path = get_path_by_id("jinen-v1-xsmall-q5").expect("Failed to download GGUF");
-        let tok_path =
-            get_tokenizer_path_by_id("jinen-v1-xsmall-q5").expect("Failed to download tokenizer");
+        let source = hugging_face_source(
+            "togatogah/jinen-v1-xsmall.gguf",
+            "jinen-v1-xsmall-Q5_K_M.gguf",
+        );
+        let (path, tok_path) = source.resolve().expect("Failed to download model");
         let model = LlamaCppModel::from_file(&path, &tok_path).expect("Failed to load model");
 
         let prompt = build_jinen_prompt("テスト", "");
@@ -239,9 +261,12 @@ mod tests {
     #[test]
 
     fn test_xsmall_conversion() {
-        let backend =
-            Backend::from_variant_id("jinen-v1-xsmall-q5").expect("Failed to download GGUF");
-        let converter = KanaKanjiConverter::new(backend).expect("Failed to create converter");
+        let source = hugging_face_source(
+            "togatogah/jinen-v1-xsmall.gguf",
+            "jinen-v1-xsmall-Q5_K_M.gguf",
+        );
+        let converter =
+            KanaKanjiConverter::from_source(&source, "xsmall").expect("Failed to load model");
 
         let result = converter.convert("かんじ", "", 1);
         assert!(result.is_ok(), "Conversion failed: {:?}", result.err());

@@ -48,20 +48,6 @@ const KV_HEADROOM_CELLS: usize = 64;
 /// Spare batch slots beyond the computed prompt / sequence rows.
 const BATCH_HEADROOM: usize = 8;
 
-/// Pack `s` into the fixed-size buffer llama.cpp reads override values out
-/// of: a NUL-terminated C string in a 128-byte array (`val_str` in
-/// `llama_model_kv_override`). The array starts zeroed, so the bytes left
-/// after `s` are the terminator; input longer than the buffer is truncated
-/// one byte short so the terminator always survives.
-fn kv_override_str(s: &str) -> [std::os::raw::c_char; 128] {
-    let mut buf = [0; 128];
-    let writable = buf.len() - 1;
-    for (dst, &byte) in buf.iter_mut().zip(s.as_bytes()).take(writable) {
-        *dst = byte as std::os::raw::c_char;
-    }
-    buf
-}
-
 /// Wrap any llama.cpp error as [`KanjiError::Inference`].
 fn inference_err(e: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> KanjiError {
     KanjiError::Inference(e.into())
@@ -120,13 +106,7 @@ pub struct LlamaCppModel {
 /// first and fail as an ordinary error the caller can degrade on.
 fn ensure_model_file_exists(path: &Path) -> Result<()> {
     if !path.exists() {
-        return Err(KanjiError::ModelLoad(
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("model file not found: {}", path.display()),
-            )
-            .into(),
-        ));
+        return Err(KanjiError::ModelNotFound(path.to_path_buf()));
     }
     Ok(())
 }
@@ -137,37 +117,6 @@ impl LlamaCppModel {
     /// GPT-2 models use CPU only (Metal has issues with GPT-2).
     pub fn from_file<P: AsRef<Path>, T: AsRef<Path>>(path: P, tokenizer_json: T) -> Result<Self> {
         Self::from_file_with_n_ctx(path, tokenizer_json, 256)
-    }
-
-    /// Load a GGUF model with a pre-tokenizer type override.
-    ///
-    /// Some models use custom pre-tokenizer types (e.g., `gpt2-small-japanese-char`)
-    /// that llama.cpp doesn't recognize. This method overrides the `tokenizer.ggml.pre`
-    /// metadata key to a compatible type before loading.
-    pub fn from_file_with_pre_tokenizer_override<P: AsRef<Path>, T: AsRef<Path>>(
-        path: P,
-        tokenizer_json: T,
-        pre_tokenizer: &str,
-    ) -> Result<Self> {
-        use llama_cpp_2::model::params::kv_overrides::ParamOverrideValue;
-        use std::ffi::CString;
-        use std::pin::pin;
-
-        ensure_model_file_exists(path.as_ref())?;
-        let backend = get_backend()?;
-
-        let mut params = pin!(LlamaModelParams::default().with_n_gpu_layers(0));
-
-        let key =
-            CString::new("tokenizer.ggml.pre").map_err(|e| KanjiError::ModelLoad(e.into()))?;
-        params.as_mut().append_kv_override(
-            &key,
-            ParamOverrideValue::Str(kv_override_str(pre_tokenizer)),
-        );
-
-        let model = LlamaModel::load_from_file(backend, path.as_ref(), &params)
-            .map_err(|e| KanjiError::ModelLoad(e.into()))?;
-        Self::finish(model, tokenizer_json, 256)
     }
 
     /// Load a GGUF model with explicit context window size
@@ -276,22 +225,19 @@ impl LlamaCppModel {
     /// For byte-level BPE tokens that represent partial UTF-8 sequences,
     /// this returns a hex representation like `<0xE3>` instead of replacement characters.
     pub fn decode_token_for_display(&self, token: LlamaToken) -> String {
-        match self.model.token_to_piece_bytes(token, 32, true, None) {
-            Ok(bytes) => {
-                if let Ok(s) = std::str::from_utf8(&bytes) {
-                    // Valid UTF-8, return as-is (escape control chars)
-                    if s.chars().all(|c| !c.is_control() || c == ' ' || c == '\n') {
-                        s.to_string()
-                    } else {
-                        // Has control characters, show hex
-                        bytes_to_hex_display(&bytes)
-                    }
-                } else {
-                    // Invalid UTF-8 (partial sequence), show hex
-                    bytes_to_hex_display(&bytes)
-                }
-            }
-            Err(_) => format!("<{}>", token.0),
+        let bytes = self.model.vocab().token_to_piece(token, true, None);
+        if bytes.is_empty() {
+            // Unknown token type: llama.cpp wrote nothing for it
+            return format!("<{}>", token.0);
+        }
+        // Valid UTF-8 without control characters is shown as-is; a partial UTF-8
+        // sequence or a control character falls back to the hex form.
+        if let Ok(s) = std::str::from_utf8(&bytes)
+            && s.chars().all(|c| !c.is_control() || c == ' ' || c == '\n')
+        {
+            s.to_string()
+        } else {
+            bytes_to_hex_display(&bytes)
         }
     }
 
@@ -335,7 +281,7 @@ impl LlamaCppModel {
                 .with_n_ubatch(batch_size),
         )?;
 
-        let model_eos = self.model.token_eos();
+        let model_eos = self.model.vocab().eos();
         let input_len = input_tokens.len();
 
         // Step 1: Process input tokens for ALL sequences in one batch
@@ -449,7 +395,7 @@ impl LlamaCppModel {
             return Ok(Vec::new());
         }
         let beam_size = beam_size.min(MAX_BEAM_SIZE);
-        let model_eos = self.model.token_eos();
+        let model_eos = self.model.vocab().eos();
         let input_len = input_tokens.len();
 
         // Sequence slots 0..beam_size hold the live beams. The scratch slots
@@ -568,7 +514,7 @@ impl LlamaCppModel {
         if beam_size == 0 || max_new_tokens == 0 || input_tokens.is_empty() {
             return Ok(Vec::new());
         }
-        let model_eos = self.model.token_eos();
+        let model_eos = self.model.vocab().eos();
 
         let initial_logits = self.eval_sequence(input_tokens)?;
         let top = self.get_top_k_tokens(&initial_logits, beam_size);
@@ -785,7 +731,7 @@ impl LlamaCppModel {
     ) -> bool {
         eos_token_id.is_some_and(|eos| token.0 == eos)
             || token == model_eos
-            || self.model.is_eog_token(token)
+            || self.model.vocab().is_eog(token)
     }
 
     /// Generate tokens with a custom sampler
@@ -818,7 +764,7 @@ impl LlamaCppModel {
         ctx.decode(&mut batch).map_err(inference_err)?;
 
         // Get model's EOS token for comparison
-        let model_eos = self.model.token_eos();
+        let model_eos = self.model.vocab().eos();
 
         // Generate new tokens
         for n_cur in (input_tokens.len()..).take(max_new_tokens) {
@@ -845,7 +791,7 @@ impl LlamaCppModel {
 
     /// Get the EOS token ID from the model
     pub fn eos_token_id(&self) -> LlamaToken {
-        self.model.token_eos()
+        self.model.vocab().eos()
     }
 }
 
@@ -940,7 +886,7 @@ mod missing_file_tests {
     #[test]
     fn missing_model_file_is_err_not_panic() {
         let result = LlamaCppModel::from_file("/nonexistent/model.gguf", "/nonexistent/tok.json");
-        assert!(matches!(result, Err(KanjiError::ModelLoad(_))));
+        assert!(matches!(result, Err(KanjiError::ModelNotFound(_))));
     }
 }
 
@@ -970,16 +916,16 @@ mod byte_fallback_token_tests {
 #[cfg(test)]
 mod beam_search_tests {
     use super::*;
-    use crate::kanji::build_jinen_prompt;
-    use crate::kanji::hf_download::{get_path_by_id, get_tokenizer_path_by_id};
-    use crate::kanji::model_config::registry;
+    use crate::kanji::{ModelSource, build_jinen_prompt};
 
-    /// Load the default registry model, or `None` when it isn't available
-    /// locally (the tests are skipped rather than failing offline).
+    /// Load a real model, or `None` when it isn't available locally (the
+    /// tests are skipped rather than failing offline).
     fn load_model() -> Option<LlamaCppModel> {
-        let reg = registry();
-        let path = get_path_by_id(&reg.default_model).ok()?;
-        let tok_path = get_tokenizer_path_by_id(&reg.default_model).ok()?;
+        let source = ModelSource::HuggingFace {
+            repo: "togatogah/jinen-v2-small.gguf".to_string(),
+            filename: "jinen-v2-small-Q5_K_M.gguf".to_string(),
+        };
+        let (path, tok_path) = source.resolve().ok()?;
         LlamaCppModel::from_file(&path, &tok_path).ok()
     }
 
@@ -1065,24 +1011,5 @@ mod beam_search_tests {
                 .expect("oversized beam must be clamped, not abort")
                 .is_empty()
         );
-    }
-}
-
-#[cfg(test)]
-mod kv_override_tests {
-    use super::kv_override_str;
-
-    #[test]
-    fn packs_a_short_name_and_leaves_the_rest_zeroed() {
-        let buf = kv_override_str("gpt2");
-        assert_eq!(&buf[..4], b"gpt2".map(|b| b as std::os::raw::c_char));
-        assert!(buf[4..].iter().all(|&b| b == 0), "must stay NUL-filled");
-    }
-
-    #[test]
-    fn truncation_keeps_the_terminator() {
-        let buf = kv_override_str(&"x".repeat(200));
-        assert_eq!(buf[126], b'x' as std::os::raw::c_char);
-        assert_eq!(buf[127], 0, "last byte must remain the NUL terminator");
     }
 }

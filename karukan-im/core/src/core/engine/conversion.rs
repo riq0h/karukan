@@ -433,7 +433,9 @@ impl InputMethodEngine {
         // 7. Back-fill descriptions. Symbol names are Fallback-only —
         //    model/dict/learning candidates must not inherit labels like
         //    「金 = 部首」 — while width annotations (`[全]カタカナ`) apply to
-        //    any pure-kana candidate that still has none.
+        //    any pure-kana candidate that still has none. The single-kanji
+        //    note is attached in `settle_candidates`, which every list
+        //    passes through.
         for c in &mut builder.candidates {
             if c.description.is_some() {
                 continue;
@@ -547,7 +549,24 @@ impl InputMethodEngine {
         }
         self.converters
             .rewriters
-            .rewrite_all(&[reading.to_string()])
+            .rewrite_ranked(reading, |rows| self.rank_by_use(rows))
+    }
+
+    /// Single kanji committed before, under any reading, move up in order
+    /// of use; the rest keep the file's order. 高 committed as こう heads
+    /// the たか list instead of sitting where the data file put it. Only
+    /// the single-kanji rows are ranked (`Rewriter::is_catalog`), so ﾀｶ
+    /// and the symbols stay where the chain puts them.
+    fn rank_by_use(&self, variants: &mut [RewriteOutput]) {
+        let Some(learning) = &self.learning else {
+            return;
+        };
+        let scores = learning.surface_scores(variants.iter().map(|(text, _)| text.as_str()));
+        if scores.is_empty() {
+            return;
+        }
+        let used = |text: &str| scores.get(text).copied().unwrap_or(0.0);
+        variants.sort_by(|a, b| used(&b.0).total_cmp(&used(&a.0)));
     }
 
     /// Date/time candidates for `reading` (`[date]` phrases). None in emoji
@@ -583,11 +602,7 @@ impl InputMethodEngine {
             .collect()
     }
 
-    pub(super) fn process_key_conversion(
-        &mut self,
-        key: &KeyEvent,
-        shift_active: bool,
-    ) -> EngineResult {
+    pub(super) fn process_key_conversion(&mut self, key: &KeyEvent) -> EngineResult {
         // Alt chords pass through before any binding matches: Alt+Tab must
         // navigate and Alt+Return must not commit.
         if key.modifiers.alt_key {
@@ -606,14 +621,14 @@ impl InputMethodEngine {
             // Fork: Shift+Arrow bakes the current candidate into the
             // composition and starts a selection there, so the user can
             // re-convert just a portion of an already-converted result.
-            Keysym::LEFT if shift_active => self.conversion_to_selection(false),
-            Keysym::RIGHT if shift_active => self.conversion_to_selection(true),
-            Keysym::HOME if shift_active => self.conversion_to_selection_home(),
-            Keysym::END if shift_active => self.conversion_to_selection_end(),
-            // Tab stays next-candidate and Shift+Tab (ISO_Left_Tab on
-            // X11) prev-candidate for mozc-compatible muscle memory.
+            Keysym::LEFT if key.modifiers.shift_key => self.conversion_to_selection(false),
+            Keysym::RIGHT if key.modifiers.shift_key => self.conversion_to_selection(true),
+            Keysym::HOME if key.modifiers.shift_key => self.conversion_to_selection_home(),
+            Keysym::END if key.modifiers.shift_key => self.conversion_to_selection_end(),
+            // Shift+Tab (ISO_Left_Tab on X11) and Shift+Space step back the
+            // way Tab and Space step forward: mozc-compatible muscle memory.
             Keysym::ISO_LEFT_TAB => self.prev_candidate(),
-            Keysym::TAB if key.modifiers.shift_key => self.prev_candidate(),
+            Keysym::TAB | Keysym::SPACE if key.modifiers.shift_key => self.prev_candidate(),
             Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.next_candidate(),
             Keysym::UP => self.prev_candidate(),
             Keysym::PAGE_DOWN => self.next_candidate_page(),
@@ -633,7 +648,7 @@ impl InputMethodEngine {
             // re-expands as the query shrinks. Without a filter it returns
             // to the composition as before.
             Keysym::BACKSPACE if self.state.filter().is_some() => {
-                self.refine_through_composing(key, shift_active)
+                self.refine_through_composing(key)
             }
             // Backspace cancels back to the composition, like Escape.
             Keysym::BACKSPACE => self.cancel_conversion(),
@@ -643,7 +658,7 @@ impl InputMethodEngine {
             // reading gets the caret. Delegated to the composing handler so
             // the two states cannot drift apart.
             Keysym::LEFT | Keysym::RIGHT | Keysym::HOME | Keysym::END => {
-                self.in_composing(false, |e| e.process_key_composing(key, shift_active))
+                self.in_composing(false, |e| e.process_key_composing(key))
             }
             _ => {
                 // Ctrl+N / Ctrl+P: emacs-style candidate navigation
@@ -676,9 +691,7 @@ impl InputMethodEngine {
                         | Keysym::KEY_E_UPPER
                         | Keysym::KEY_F
                         | Keysym::KEY_F_UPPER => {
-                            return self.in_composing(false, |e| {
-                                e.process_key_composing(key, shift_active)
-                            });
+                            return self.in_composing(false, |e| e.process_key_composing(key));
                         }
                         _ => {}
                     }
@@ -702,9 +715,9 @@ impl InputMethodEngine {
                 // narrowed view it keeps the selected candidate instead.
                 if key.to_char().is_some() && !key.modifiers.control_key {
                     if self.state.filter().is_none() {
-                        return self.bake_selection_then_type(key, shift_active);
+                        return self.bake_selection_then_type(key);
                     }
-                    return self.refine_through_composing(key, shift_active);
+                    return self.refine_through_composing(key);
                 }
 
                 // Everything else is consumed as a no-op — leaked chords
@@ -735,20 +748,19 @@ impl InputMethodEngine {
     /// A narrowed source view is the exception, handled by the caller: there
     /// typing *is* the query — the view exists to search a source — so it
     /// keeps refining as upstream does.
-    fn bake_selection_then_type(&mut self, key: &KeyEvent, shift_active: bool) -> EngineResult {
+    fn bake_selection_then_type(&mut self, key: &KeyEvent) -> EngineResult {
         self.bake_conversion_for_selection();
-        self.process_key_composing(key, shift_active)
+        self.process_key_composing(key)
     }
 
     /// Feed a refining keystroke (printable char, Backspace) through the
     /// composing path, then re-enter the conversion with the previous
     /// source filter if one was active. With a filter the composing render
     /// is discarded, so its auto-suggest inference is suppressed.
-    fn refine_through_composing(&mut self, key: &KeyEvent, shift_active: bool) -> EngineResult {
+    fn refine_through_composing(&mut self, key: &KeyEvent) -> EngineResult {
         let filter = self.state.filter();
-        let result = self.in_composing(filter.is_some(), |engine| {
-            engine.process_key_composing(key, shift_active)
-        });
+        let result =
+            self.in_composing(filter.is_some(), |engine| engine.process_key_composing(key));
         if let Some(source) = filter
             && matches!(self.state, InputState::Composing { .. })
         {

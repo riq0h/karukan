@@ -267,3 +267,27 @@ fn test_ctrl_b_in_conversion_moves_caret_like_left() {
     assert!(matches!(engine.state(), InputState::Composing { .. }));
     assert_eq!(engine.input_buf.cursor(), 2);
 }
+
+#[test]
+fn test_shift_space_steps_back_a_candidate() {
+    // Shift+Space is prev-candidate, the mirror of Space, like Shift+Tab.
+    let mut engine = InputMethodEngine::new();
+    engine.dicts.user = Some(dict_from_json(
+        r#"[{"reading":"あい","candidates":[
+            {"surface":"藍","score":2.0},
+            {"surface":"愛","score":1.0}
+        ]}]"#,
+    ));
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    let before = engine.candidates().unwrap().cursor();
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert_eq!(engine.candidates().unwrap().cursor(), before + 1);
+
+    let result = engine.process_key(&press_shift_key(Keysym::SPACE));
+    assert!(result.consumed);
+    assert_eq!(engine.candidates().unwrap().cursor(), before);
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert!(committed(&result).is_none(), "Shift+Space must not commit");
+}
